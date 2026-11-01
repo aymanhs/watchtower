@@ -55,6 +55,17 @@ func (m *Manager) Client(cfg *server.Config) *Client {
 	return c
 }
 
+// Connect establishes (or verifies) the persistent connection up front.
+// Callers should call this once at start-up for every configured server,
+// concurrently and independently, so that a metric's own timeout never has
+// to also pay for a cold SSH handshake on its first execution. Run still
+// connects lazily if Connect was never called or the connection dropped.
+func (c *Client) Connect(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ensureConnectedLocked()
+}
+
 // Run executes command on a new session/channel over the persistent
 // connection, bounded by timeout. Stdout is returned on success. A
 // non-zero exit, a transport error or a timeout is returned as an error —

@@ -1,7 +1,8 @@
-// Command watchtower is the Phase 1 proof-of-concept: load metric
+// Command watchtower is the Phase 1/2 proof-of-concept: load metric
 // definitions and server configs, connect over SSH, collect the resolved
-// metrics on independent per-metric/per-server schedules, and print
-// observations to the console. No storage, no events, no GUI yet.
+// metrics on independent per-metric/per-server schedules under a bounded
+// concurrency cap, and print observations to the console. No storage, no
+// events, no GUI yet.
 package main
 
 import (
@@ -15,9 +16,42 @@ import (
 
 	"aymanhs/watchtower/internal/collect"
 	"aymanhs/watchtower/internal/metric"
+	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/server"
 	"aymanhs/watchtower/internal/sshmgr"
 )
+
+// maxConcurrentCollections bounds how many SSH commands may be in flight at
+// once across every server and metric combined. TODO: make configurable.
+const maxConcurrentCollections = 16
+
+// connectWarmupTimeout bounds the up-front connection attempt per server.
+// It is independent of any metric's own collection timeout, so a slow
+// first handshake never eats into a metric's execution budget.
+const connectWarmupTimeout = 10 * time.Second
+
+// connectAll dials every server concurrently before scheduling starts. A
+// server that's slow or unreachable is logged and left to the normal
+// lazy-reconnect path in sshmgr.Client.Run — it never blocks or fails the
+// others.
+func connectAll(ctx context.Context, clients map[string]*sshmgr.Client) {
+	var wg sync.WaitGroup
+	for name, client := range clients {
+		name, client := name, client
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			connectCtx, cancel := context.WithTimeout(ctx, connectWarmupTimeout)
+			defer cancel()
+			if err := client.Connect(connectCtx); err != nil {
+				log.Printf("server %s: initial connect failed, will retry lazily: %v", name, err)
+				return
+			}
+			log.Printf("server %s: connected", name)
+		}()
+	}
+	wg.Wait()
+}
 
 func main() {
 	defs, err := metric.LoadDefinitions("metrics")
@@ -50,23 +84,37 @@ func main() {
 
 	mgr := sshmgr.NewManager()
 
-	var wg sync.WaitGroup
+	clients := make(map[string]*sshmgr.Client, len(servers))
+	for _, cfg := range servers {
+		clients[cfg.Name] = mgr.Client(cfg)
+	}
+	connectAll(ctx, clients)
+
+	var tasks []scheduler.Task
 	for _, cfg := range servers {
 		resolved := registry.ResolveGroups(cfg.Groups)
 		if len(resolved) == 0 {
 			log.Printf("server %s: no metrics resolved from groups %v", cfg.Name, cfg.Groups)
 			continue
 		}
-		client := mgr.Client(cfg)
+		client := clients[cfg.Name]
 		for _, def := range resolved {
 			interval, timeout := effective(cfg, def)
 			log.Printf("server %s: scheduling %s every %s (timeout %s)", cfg.Name, def.Name, interval, timeout)
-			wg.Add(1)
-			go collectLoop(ctx, &wg, client, cfg.Name, def, interval, timeout)
+			tasks = append(tasks, &metricTask{
+				serverName: cfg.Name,
+				def:        def,
+				client:     client,
+				interval:   interval,
+				timeout:    timeout,
+			})
 		}
 	}
 
-	wg.Wait()
+	sched := scheduler.New(maxConcurrentCollections, func(taskName string, err error) {
+		log.Printf("[%s] ERROR: %v", taskName, err)
+	})
+	sched.Run(ctx, tasks)
 	log.Println("all collectors stopped")
 }
 
@@ -86,34 +134,27 @@ func effective(cfg *server.Config, def *metric.Definition) (interval, timeout ti
 	return interval, timeout
 }
 
-// collectLoop runs one metric, for one server, on its own ticker, in its
-// own goroutine. A failure here never affects any other metric or server.
-// Since each tick blocks on the previous run's result before the next can
-// fire, and timeout < interval is enforced at definition-load time,
-// executions never overlap.
-func collectLoop(ctx context.Context, wg *sync.WaitGroup, client *sshmgr.Client, serverName string, def *metric.Definition, interval, timeout time.Duration) {
-	defer wg.Done()
+// metricTask adapts one (server, metric definition) pair to scheduler.Task.
+// It is the only place that bridges the generic scheduler to the
+// SSH/collect machinery.
+type metricTask struct {
+	serverName        string
+	def               *metric.Definition
+	client            *sshmgr.Client
+	interval, timeout time.Duration
+}
 
-	run := func() {
-		obs, err := collect.Execute(ctx, client, serverName, def, timeout)
-		if err != nil {
-			log.Printf("[%s/%s] ERROR: %v", serverName, def.Name, err)
-			return
-		}
-		for _, o := range obs {
-			fmt.Printf("%-32s = %-16v %s\n", o.FullName(), o.Value, o.Timestamp.Format(time.RFC3339))
-		}
-	}
+func (t *metricTask) Name() string            { return t.serverName + "/" + t.def.Name }
+func (t *metricTask) Interval() time.Duration { return t.interval }
+func (t *metricTask) Timeout() time.Duration  { return t.timeout }
 
-	run() // collect immediately, don't wait a full interval for the first reading
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			run()
-		}
+func (t *metricTask) Run(ctx context.Context) error {
+	obs, err := collect.Execute(ctx, t.client, t.serverName, t.def, t.timeout)
+	if err != nil {
+		return err
 	}
+	for _, o := range obs {
+		fmt.Printf("%-32s = %-16v %s\n", o.FullName(), o.Value, o.Timestamp.Format(time.RFC3339))
+	}
+	return nil
 }
