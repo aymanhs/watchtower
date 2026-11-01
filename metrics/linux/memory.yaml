@@ -19,6 +19,7 @@ collector:
         print "shared=" $5
         print "cache=" $6
         print "available=" $7
+        print "used_percent=" ($3/$2*100)
       }'
 metrics:
   total:
@@ -36,6 +37,9 @@ metrics:
   available:
     unit: bytes
     type: gauge
+  used_percent:
+    unit: percent
+    type: gauge
 events:
   - name: memory.available.warning
     measurement: available
@@ -48,3 +52,14 @@ events:
     threshold: 134217728
     severity: critical
     recover_above: 268435456
+  - name: memory.used_percent.warning
+    measurement: used_percent
+    condition: above
+    threshold: 80
+    severity: warning
+  - name: memory.used_percent.critical
+    measurement: used_percent
+    condition: above
+    threshold: 90
+    severity: critical
+    recover_below: 85

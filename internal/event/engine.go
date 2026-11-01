@@ -161,6 +161,32 @@ func (e *Engine) EvaluateCollectorResult(serverName, metricName string, collectE
 	}
 }
 
+// CurrentSeverity returns the active severity for one measurement — "" if
+// normal or never evaluated. measurement is "metricName.measurementKey"
+// (e.g. "memory.available"), matching the key shape EvaluateThreshold uses
+// internally. This is a steady-state query, independent of whether the
+// last evaluation produced a transition Event.
+func (e *Engine) CurrentSeverity(serverName, measurement string) metric.Severity {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if st, ok := e.thresholds[serverName+"/"+measurement]; ok {
+		return st.severity
+	}
+	return ""
+}
+
+// IsFailing reports whether a (server, metric) collector is currently
+// considered failing — the steady-state counterpart to
+// EvaluateCollectorResult's transition events.
+func (e *Engine) IsFailing(serverName, metricName string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if st, ok := e.operational[serverName+"/"+metricName]; ok {
+		return st.failing
+	}
+	return false
+}
+
 // History returns a snapshot of all events recorded so far, oldest first.
 func (e *Engine) History() []Event {
 	e.mu.Lock()

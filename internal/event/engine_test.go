@@ -159,6 +159,41 @@ func TestHistoryAndAcknowledge(t *testing.T) {
 	}
 }
 
+func TestCurrentSeverity(t *testing.T) {
+	e := NewEngine(0)
+	def := diskDef()
+	now := time.Now()
+
+	if got := e.CurrentSeverity("s1", "disk.used_percent"); got != "" {
+		t.Fatalf("got %q before any evaluation, want normal", got)
+	}
+	e.EvaluateThreshold("s1", def, "used_percent", 95, now)
+	if got := e.CurrentSeverity("s1", "disk.used_percent"); got != metric.SeverityCritical {
+		t.Fatalf("got %q after breaching critical, want critical", got)
+	}
+	// A different server is a different entity.
+	if got := e.CurrentSeverity("s2", "disk.used_percent"); got != "" {
+		t.Fatalf("got %q for unrelated server, want normal", got)
+	}
+}
+
+func TestIsFailing(t *testing.T) {
+	e := NewEngine(0)
+	now := time.Now()
+
+	if e.IsFailing("s1", "cpu") {
+		t.Fatal("IsFailing true before any result, want false")
+	}
+	e.EvaluateCollectorResult("s1", "cpu", errors.New("timeout"), now)
+	if !e.IsFailing("s1", "cpu") {
+		t.Fatal("IsFailing false after a failure, want true")
+	}
+	e.EvaluateCollectorResult("s1", "cpu", nil, now)
+	if e.IsFailing("s1", "cpu") {
+		t.Fatal("IsFailing true after recovery, want false")
+	}
+}
+
 func TestHistory_BoundedByMaxHistory(t *testing.T) {
 	e := NewEngine(2)
 	now := time.Now()
