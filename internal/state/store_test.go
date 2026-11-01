@@ -7,6 +7,43 @@ import (
 	"aymanhs/watchtower/internal/metric"
 )
 
+func TestStore_SetCluster(t *testing.T) {
+	s := NewStore()
+	now := time.Now()
+
+	// Set before any metric update: must not be lost, and must not create
+	// a phantom metric.
+	s.SetCluster("nats1", "connetic-nats")
+	s.UpdateSuccess("nats1", "nats", nil, map[string]metric.Severity{}, now)
+
+	snap := s.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("got %d servers, want 1", len(snap))
+	}
+	if snap[0].Cluster != "connetic-nats" {
+		t.Fatalf("Cluster = %q, want connetic-nats", snap[0].Cluster)
+	}
+
+	// A server nobody ever called SetCluster for has an empty Cluster,
+	// not an error.
+	s.UpdateSuccess("plain-server", "cpu", nil, map[string]metric.Severity{}, now)
+	snap = s.Snapshot()
+	for _, sv := range snap {
+		if sv.Name == "plain-server" && sv.Cluster != "" {
+			t.Errorf("plain-server.Cluster = %q, want empty", sv.Cluster)
+		}
+	}
+}
+
+func TestWorst(t *testing.T) {
+	if Worst(StatusOK, StatusCritical) != StatusCritical {
+		t.Error("Worst(ok, critical) should be critical")
+	}
+	if Worst(StatusWarning, StatusUnknown) != StatusWarning {
+		t.Error("Worst(warning, unknown) should be warning — critical/warning outrank unknown")
+	}
+}
+
 func TestStore_EmptySnapshot(t *testing.T) {
 	s := NewStore()
 	if got := s.Snapshot(); len(got) != 0 {

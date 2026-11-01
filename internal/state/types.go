@@ -47,6 +47,12 @@ func worst(a, b Status) Status {
 	return a
 }
 
+// Worst is worst exported — a presentation layer grouping servers (e.g.
+// by Cluster) needs the same "a single critical member makes the whole
+// group read critical" rule Store already applies across one server's
+// metrics, without duplicating the rank table.
+func Worst(a, b Status) Status { return worst(a, b) }
+
 // Scale is a resolved 0%-100% reference for a Bar or Gauge widget — by the
 // time it reaches a MeasurementView, metric.Scale's Min/Max/MaxRef has
 // already been resolved to concrete numbers (see ResolveScale).
@@ -109,7 +115,11 @@ type MetricView struct {
 
 // ServerView is one server's full current state, as the GUI consumes it.
 type ServerView struct {
-	Name    string
+	Name string
+	// Cluster is the free-form grouping label from server.Config.Cluster,
+	// if any — not interpreted here, just carried through for a GUI to
+	// group by. "" means this server isn't part of any named cluster.
+	Cluster string
 	Status  Status       // worst of all its Metrics
 	Metrics []MetricView // sorted by Name
 }

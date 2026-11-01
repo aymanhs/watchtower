@@ -37,7 +37,7 @@ func testDef() *metric.Definition {
 
 func TestExecute_ParsesKnownMeasurements(t *testing.T) {
 	runner := fakeRunner{out: "used=100\nfree=200\nextra=999\n"}
-	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second)
+	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestExecute_ParsesKnownMeasurements(t *testing.T) {
 
 func TestExecute_RunnerErrorYieldsNoObservations(t *testing.T) {
 	runner := fakeRunner{err: errors.New("ssh: command timed out")}
-	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second)
+	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -69,7 +69,7 @@ func TestExecute_RunnerErrorYieldsNoObservations(t *testing.T) {
 
 func TestExecute_MalformedOutputIsError(t *testing.T) {
 	runner := fakeRunner{out: "used=not-a-number\n"}
-	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second)
+	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second, nil)
 	if err == nil {
 		t.Fatal("expected error for malformed output, got nil")
 	}
@@ -80,7 +80,7 @@ func TestExecute_MalformedOutputIsError(t *testing.T) {
 
 func TestExecute_MissingMeasurementSkippedNotZero(t *testing.T) {
 	runner := fakeRunner{out: "used=100\n"} // "free" absent
-	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second)
+	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

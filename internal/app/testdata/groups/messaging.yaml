@@ -1,0 +1,5 @@
+name: messaging
+metrics:
+  nats:
+    config:
+      endpoint: localhost:8222

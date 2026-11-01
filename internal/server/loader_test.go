@@ -53,6 +53,13 @@ func TestLoadServers_Invalid(t *testing.T) {
 	}
 }
 
+func TestLoadServers_RejectsDuplicateName(t *testing.T) {
+	_, err := LoadServers("testdata/duplicate")
+	if err == nil {
+		t.Fatal("expected error for two server files defining the same name, got nil")
+	}
+}
+
 func TestConfigValidate_RejectsUnsupportedConnectionType(t *testing.T) {
 	c := &Config{
 		Name: "x",

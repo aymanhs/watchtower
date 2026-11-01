@@ -18,6 +18,7 @@ type Store struct {
 
 type serverEntry struct {
 	name    string
+	cluster string
 	metrics map[string]*MetricView
 }
 
@@ -60,6 +61,17 @@ func (s *Store) UpdateSuccess(serverName, metricName string, measurements []Meas
 	sort.Slice(mv.Measurements, func(i, j int) bool { return mv.Measurements[i].Key < mv.Measurements[j].Key })
 }
 
+// SetCluster records serverName's cluster label — a GUI's grouping, not
+// anything the engine interprets. Safe to call before any metric update
+// (it creates the server entry if needed) or any time after; cluster is
+// static per server for the process's lifetime, so there's no "clearing"
+// operation, only setting it (including to "" for no cluster).
+func (s *Store) SetCluster(serverName, cluster string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.serverEntry(serverName).cluster = cluster
+}
+
 // MarkStale records a failed collection: last-known measurements are kept
 // exactly as they were, Stale is set, and Status becomes StatusUnknown —
 // a failure must never look like the metric quietly returned to normal.
@@ -73,14 +85,21 @@ func (s *Store) MarkStale(serverName, metricName string, errMsg string, ts time.
 	mv.Status = StatusUnknown
 }
 
-// entry returns (creating if necessary) the MetricView for serverName and
-// metricName. Caller must hold s.mu.
-func (s *Store) entry(serverName, metricName string) *MetricView {
+// serverEntry returns (creating if necessary) serverName's entry. Caller
+// must hold s.mu.
+func (s *Store) serverEntry(serverName string) *serverEntry {
 	srv, ok := s.servers[serverName]
 	if !ok {
 		srv = &serverEntry{name: serverName, metrics: make(map[string]*MetricView)}
 		s.servers[serverName] = srv
 	}
+	return srv
+}
+
+// entry returns (creating if necessary) the MetricView for serverName and
+// metricName. Caller must hold s.mu.
+func (s *Store) entry(serverName, metricName string) *MetricView {
+	srv := s.serverEntry(serverName)
 	mv, ok := srv.metrics[metricName]
 	if !ok {
 		mv = &MetricView{Name: metricName}
@@ -97,7 +116,7 @@ func (s *Store) Snapshot() []ServerView {
 
 	out := make([]ServerView, 0, len(s.servers))
 	for _, srv := range s.servers {
-		sv := ServerView{Name: srv.name, Status: StatusOK}
+		sv := ServerView{Name: srv.name, Cluster: srv.cluster, Status: StatusOK}
 		for _, mv := range srv.metrics {
 			cp := *mv
 			cp.Measurements = append([]MeasurementView(nil), mv.Measurements...)

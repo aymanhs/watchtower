@@ -1,0 +1,8 @@
+name: dup
+connection:
+  type: ssh
+  host: 10.0.0.2
+  user: monitoring
+  key: ~/.ssh/id_ed25519
+groups:
+  - basic

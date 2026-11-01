@@ -26,7 +26,12 @@ type MetricTask struct {
 	Def                       *metric.Definition
 	Client                    collect.Runner // typically *sshmgr.Client; an interface so this is testable without a real SSH connection
 	CollectInterval, Deadline time.Duration  // Deadline: per-execution timeout (named to avoid colliding with the Timeout() method below)
-	Events                    *event.Engine
+	// Config is this (server, metric) pair's fully-resolved collector
+	// parameters (see internal/app.effective), substituted into the
+	// collector's command template. Empty for the common case of a
+	// definition with no parameters at all.
+	Config map[string]any
+	Events *event.Engine
 
 	// Store, if non-nil, receives this task's results for a GUI (or any
 	// other presentation) to read via Store.Snapshot.
@@ -41,7 +46,7 @@ func (t *MetricTask) Interval() time.Duration { return t.CollectInterval }
 func (t *MetricTask) Timeout() time.Duration  { return t.Deadline }
 
 func (t *MetricTask) Run(ctx context.Context) error {
-	obs, err := collect.Execute(ctx, t.Client, t.ServerName, t.Def, t.Deadline)
+	obs, err := collect.Execute(ctx, t.Client, t.ServerName, t.Def, t.Deadline, t.Config)
 	now := time.Now()
 
 	if opEv := t.Events.EvaluateCollectorResult(t.ServerName, t.Def.Name, err, now); opEv != nil && t.Print {

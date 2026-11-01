@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -22,7 +23,7 @@ const (
 func render(c *ui.Context, store *state.Store) {
 	t := c.Theme()
 	width, _ := c.Size()
-	servers := store.Snapshot()
+	ungrouped, clusters := groupByCluster(store.Snapshot())
 
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
 		ui.Row(c).Padding(8, 10, 0, 10).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
@@ -32,15 +33,92 @@ func render(c *ui.Context, store *state.Store) {
 			}
 		})
 		ui.Scroll(c).Fill().Padding(10).Gap(8).Children(func() {
-			if len(servers) == 0 {
+			if len(ungrouped) == 0 && len(clusters) == 0 {
 				ui.Text(c, "waiting for data…").FontSize(13).TextColor(t.TextMuted)
 				return
 			}
-			for i := range servers {
-				serverRow(c, width, servers[i])
+			for i := range ungrouped {
+				serverRow(c, width, ungrouped[i])
+			}
+			for _, g := range clusters {
+				clusterRow(c, width, g)
 			}
 		})
 	})
+}
+
+// clusterGroup is servers sharing a server.Config.Cluster label, with a
+// rolled-up status (the worst of its members', same rule Store already
+// applies across one server's own metrics) so "look at a cluster" means
+// something at a glance before drilling into any one member.
+type clusterGroup struct {
+	name    string
+	status  state.Status
+	members []state.ServerView
+}
+
+// groupByCluster splits a snapshot into servers with no cluster label
+// (rendered exactly as before) and clusters (rendered as a header plus
+// their members), clusters sorted by name for a stable display order.
+func groupByCluster(servers []state.ServerView) (ungrouped []state.ServerView, clusters []clusterGroup) {
+	byName := map[string][]state.ServerView{}
+	var order []string
+	for _, sv := range servers {
+		if sv.Cluster == "" {
+			ungrouped = append(ungrouped, sv)
+			continue
+		}
+		if _, ok := byName[sv.Cluster]; !ok {
+			order = append(order, sv.Cluster)
+		}
+		byName[sv.Cluster] = append(byName[sv.Cluster], sv)
+	}
+	sort.Strings(order)
+	for _, name := range order {
+		members := byName[name]
+		status := state.StatusOK
+		for _, m := range members {
+			status = state.Worst(status, m.Status)
+		}
+		clusters = append(clusters, clusterGroup{name: name, status: status, members: members})
+	}
+	return ungrouped, clusters
+}
+
+// clusterRow renders a cluster's header, then each member indented
+// beneath it via serverRow — the same per-server rendering (and the same
+// three width tiers) a standalone server gets, so drilling from "the
+// cluster" to "this one member" is just reading further down, not a
+// different view.
+func clusterRow(c *ui.Context, width float32, g clusterGroup) {
+	t := c.Theme()
+	ui.Column(c).Gap(6).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			statusDot(c, g.status, 10, clusterTooltip(g))
+			ui.Text(c, g.name).FontSize(13).Bold()
+			ui.Text(c, fmt.Sprintf("(%d)", len(g.members))).FontSize(11).TextColor(t.TextMuted)
+		})
+		ui.Column(c).Gap(6).Padding(0, 0, 0, 18).Children(func() {
+			for _, m := range g.members {
+				serverRow(c, width, m)
+			}
+		})
+	})
+}
+
+// clusterTooltip names any member not currently ok, same spirit as
+// serverTooltip for one server's metrics.
+func clusterTooltip(g clusterGroup) string {
+	if g.status == state.StatusOK {
+		return g.name + ": all " + fmt.Sprint(len(g.members)) + " ok"
+	}
+	var worst []string
+	for _, m := range g.members {
+		if m.Status != state.StatusOK {
+			worst = append(worst, fmt.Sprintf("%s (%s)", m.Name, m.Status))
+		}
+	}
+	return g.name + ": " + strings.Join(worst, ", ")
 }
 
 func serverRow(c *ui.Context, width float32, sv state.ServerView) {

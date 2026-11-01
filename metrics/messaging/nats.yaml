@@ -1,0 +1,78 @@
+name: nats
+description: NATS server statistics, via its HTTP monitoring endpoint (varz)
+groups:
+  - messaging
+tags:
+  - messaging
+  - nats
+interval: 15s
+timeout: 5s
+collector:
+  type: shell
+  # curl's own exit code is captured explicitly and the command exits
+  # non-zero on failure *before* reaching jq — a bare "curl | jq" pipeline
+  # reports jq's exit code, not curl's, so a down/unmonitored endpoint
+  # (connection refused, empty stdin to jq) would otherwise look like a
+  # successful collection with zero measurements, not a failure. --fail
+  # also turns an HTTP error response (e.g. wrong path) into a failure,
+  # not just a connection-level one.
+  command: |
+    body=$(curl -sf --max-time 3 "http://{{.endpoint}}/varz") || exit 1
+    echo "$body" | jq -r '
+      "connections=" + (.connections|tostring),
+      "in_msgs=" + (.in_msgs|tostring),
+      "out_msgs=" + (.out_msgs|tostring),
+      "in_bytes=" + (.in_bytes|tostring),
+      "out_bytes=" + (.out_bytes|tostring),
+      "slow_consumers=" + (.slow_consumers|tostring),
+      "mem=" + (.mem|tostring),
+      "cpu=" + (.cpu|tostring)
+    '
+metrics:
+  connections:
+    unit: count
+    type: gauge
+  in_msgs:
+    unit: count
+    type: counter
+  out_msgs:
+    unit: count
+    type: counter
+  in_bytes:
+    unit: bytes
+    type: counter
+  out_bytes:
+    unit: bytes
+    type: counter
+  slow_consumers:
+    unit: count
+    type: gauge
+  mem:
+    unit: bytes
+    type: gauge
+  cpu:
+    unit: percent
+    type: gauge
+    display:
+      widget: gauge
+      primary: true
+      scale:
+        min: 0
+        max: 100
+events:
+  - name: nats.slow_consumers.warning
+    measurement: slow_consumers
+    condition: above
+    threshold: 0
+    severity: warning
+  - name: nats.cpu.warning
+    measurement: cpu
+    condition: above
+    threshold: 80
+    severity: warning
+  - name: nats.cpu.critical
+    measurement: cpu
+    condition: above
+    threshold: 90
+    severity: critical
+    recover_below: 85

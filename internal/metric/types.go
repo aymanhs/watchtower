@@ -5,7 +5,10 @@
 // It only parses and validates definitions.
 package metric
 
-import "fmt"
+import (
+	"fmt"
+	"text/template"
+)
 
 // Type classifies how a measurement behaves over time.
 type Type string
@@ -159,6 +162,12 @@ func (d *Definition) Validate() error {
 	case CollectorShell:
 		if d.Collector.Command == "" {
 			return fmt.Errorf("metric %q: shell collector requires a command", d.Name)
+		}
+		// Parse-only: config values aren't known until a server supplies
+		// them at run time, but a malformed template ({{ .foo ) is a typo
+		// every server would hit, so catch it once, here, at load time.
+		if _, err := template.New("collector").Parse(d.Collector.Command); err != nil {
+			return fmt.Errorf("metric %q: collector.command is not a valid template: %w", d.Name, err)
 		}
 	case "":
 		return fmt.Errorf("metric %q: collector.type is required", d.Name)

@@ -52,6 +52,14 @@ type Config struct {
 	Groups     []string                  `yaml:"groups,omitempty"`
 	Metrics    map[string]MetricOverride `yaml:"metrics,omitempty"`
 
+	// Cluster is an optional, free-form grouping label a presentation
+	// layer may use to show related servers together (e.g. a GUI grouping
+	// a NATS cluster's members) — not interpreted by the engine at all,
+	// and not specific to any one kind of server. Members of the same
+	// cluster need not share a host: each Config still has its own
+	// Connection, so a cluster can span machines freely.
+	Cluster string `yaml:"cluster,omitempty"`
+
 	// SourceFile is set by the loader, not read from YAML, for diagnostics.
 	SourceFile string `yaml:"-"`
 }

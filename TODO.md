@@ -45,12 +45,15 @@ Phases per the original project brief. Check `git log` for commit-level detail; 
 - Value formatting (`formatValue` in view.go) is still a hand-rolled, bytes-only special case, separate from the widget-selection work above — a real unit-aware formatter is a natural next piece of the same "display hints" idea.
 - **Closed: bars now get zone bands too**, same mechanism as the gauge (`internal/app` resolves `Zones` for `WidgetBar` as well as `WidgetGauge`; `bar()` draws colored segments + a marker line instead of a flat fill when zones are present). Confirmed via a new `internal/app` test (`used` — a bar — gets the same zones a gauge would) and live.
 - **Closed: `load1`/`load5`/`load15` no longer hardcode `max: 4`.** `cpu.yaml` now collects a `cores` measurement (`nproc`) and the load bars scale against it via `display.scale.max_ref: cores` — the exact same generic mechanism `memory`'s bars already used for `total`, zero new Go code. Confirmed live: jumpbox (8 cores) and sbnats (2 cores) visibly scale differently for similar raw load values.
-- Value formatting (`formatValue` in view.go) is still a hand-rolled, bytes-only special case, separate from the widget-selection work above — a real unit-aware formatter is a natural next piece of the same "display hints" idea.
+- **GUI now groups servers by cluster** (`server.Config.Cluster`, a generic free-form label, not NATS-specific; `state.Store.SetCluster` / `ServerView.Cluster`). A cluster renders as a header (rolled-up worst-of-members status, same rule `Store` already applies across one server's metrics, exported as `state.Worst`) with each member indented beneath via the exact same `serverRow` every standalone server uses — "look at the cluster" and "look at one member" are the same view, just how far down you read. Confirmed live with 2 real clusters.
+- **Collector commands are now parameterized templates** (`metric.Collector.Render`, Go `text/template` against the fully-resolved group/server `config` map — the brief's own illustrative `metrics.nats.config.endpoint` example, finally implemented). `Definition.Validate` parse-checks the template at load time; a server missing a required config key fails loudly at run time (`missingkey=error`), never silently. `internal/app`'s `effective()` was silently discarding this resolved config before — now it's wired all the way through to `collect.Execute`.
 
-## Phase 6 — Expand the monitoring library ⬜ barely started
+## Phase 6 — Expand the monitoring library 🟡 started
 
-- Have: `memory` (full, incl. `used_percent`), `cpu` (load averages + real `usage` % via `vmstat`).
-- Missing: disk, network, systemd, docker, nats, mqtt, postgres.
+- Have: `memory` (full, incl. `used_percent`), `cpu` (load averages + real `usage` % via `vmstat`), `nats` (connections/msgs/bytes/slow_consumers/mem/cpu via its HTTP `/varz` monitoring endpoint).
+- `nats.yaml`'s collector is written defensively on purpose: it captures `curl`'s own exit code and fails explicitly *before* piping to `jq`, and uses `--fail` — a bare `curl | jq` reports jq's exit code, not curl's, so a down/unmonitored endpoint (connection refused, empty stdin to jq) would otherwise look like a *successful* collection with zero measurements. Verified this exact failure mode live before fixing it.
+- Real-world gap found while wiring this up, not fixed (by design — see conversation): `sbnats` runs 6 NATS processes in 2 clusters (`connetic-nats`: nats1/2/3, `connetic-nats-2`: nats4/5/6), but only one node per cluster (nats1, nats4) has HTTP monitoring enabled. The other 4 are modeled with placeholder ports and correctly show stale/critical until monitoring is enabled on them server-side — not something this app can or should fix.
+- Missing: disk, network, systemd, docker, mqtt, postgres.
 
 ---
 
@@ -59,6 +62,7 @@ Phases per the original project brief. Check `git log` for commit-level detail; 
 - **SSH reconnect has no backoff** — `sshmgr.Client` redials immediately on the next use after a dropped connection; fine at this scale, would hammer a genuinely down server at larger scale.
 - **Concurrency cap is a hardcoded const** (`maxConcurrentCollections = 16` in `main.go`), not exposed as config yet.
 - **No credentials beyond SSH key file / ssh-agent** — satisfies "no plaintext passwords," nothing fancier (vault, etc.) built or asked for.
+- **No SSH connection sharing across server entries on the same host** — `sbnats`'s 7 server configs (1 OS-level + 6 NATS processes) each open their own independent SSH connection to the identical machine. Simple and correct, but observed a real (self-recovering) transient timeout during the initial connection burst with 7 at once; worth revisiting if a host ever hosts many more monitored processes than that.
 
 ## Build
 

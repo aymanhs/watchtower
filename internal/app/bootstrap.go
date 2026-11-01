@@ -79,8 +79,11 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 			continue
 		}
 		client := clients[cfg.Name]
+		if store != nil {
+			store.SetCluster(cfg.Name, cfg.Cluster)
+		}
 		for _, def := range resolved {
-			interval, timeout := effective(groupReg, cfg, def)
+			interval, timeout, config := effective(groupReg, cfg, def)
 			log.Printf("server %s: scheduling %s every %s (timeout %s)", cfg.Name, def.Name, interval, timeout)
 			tasks = append(tasks, &MetricTask{
 				ServerName:      cfg.Name,
@@ -88,6 +91,7 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 				Client:          client,
 				CollectInterval: interval,
 				Deadline:        timeout,
+				Config:          config,
 				Events:          events,
 				Store:           store,
 				Print:           print,
@@ -111,16 +115,18 @@ func loadGroupRegistry(dir string) (*group.Registry, error) {
 	return group.NewRegistry(configs)
 }
 
-// effective resolves def's interval and timeout for cfg, applying the full
-// precedence chain: definition defaults, then cfg's groups' overrides in
-// the order cfg lists them, then cfg's own server-specific override last.
-func effective(groupReg *group.Registry, cfg *server.Config, def *metric.Definition) (interval, timeout time.Duration) {
+// effective resolves def's interval, timeout and collector config for cfg,
+// applying the full precedence chain: definition defaults, then cfg's
+// groups' overrides in the order cfg lists them, then cfg's own
+// server-specific override last. config is what a parameterized
+// collector's command template (e.g. a NATS server's "endpoint") renders
+// against — empty for the common case of a definition with no parameters.
+func effective(groupReg *group.Registry, cfg *server.Config, def *metric.Definition) (interval, timeout time.Duration, config map[string]any) {
 	overrides := groupReg.Overrides(cfg.Groups, def.Name)
 	if serverOverride, ok := cfg.Metrics[def.Name]; ok {
 		overrides = append(overrides, serverOverride)
 	}
-	interval, timeout, _ = def.Resolve(overrides...)
-	return interval, timeout
+	return def.Resolve(overrides...)
 }
 
 // connectAll dials every server concurrently before scheduling starts. A
