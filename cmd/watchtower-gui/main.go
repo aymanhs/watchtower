@@ -44,7 +44,7 @@ func main() {
 			Height:    240,
 			MinWidth:  140,
 			MinHeight: 60,
-			Content:   ui.View(func(c *ui.Context) { render(c, store) }),
+			Content:   ui.View(func(c *ui.Context) { render(c, store, events) }),
 		})
 
 		// Collection runs on its own schedule in the background; nudge the

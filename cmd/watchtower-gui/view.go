@@ -7,36 +7,45 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
 )
 
-// Breakpoints, in DIPs, for the three tiers the user asked for:
+// Breakpoints, in DIPs, for the tiers the user asked for:
 //   - compact:  server name + overall status only
 //   - medium:   + one indicator per metric
-//   - detailed: + each metric's measurements
+//   - detailed: + each metric's measurements, every server stacked
+//   - wide:     master-detail — a compact list, one server's full detail
+//     at a time, decluttering what "detailed" becomes once a server has
+//     several metrics each with several measurements.
 const (
 	breakpointMedium   = 260
 	breakpointDetailed = 480
+	breakpointWide     = 700
 )
 
-func render(c *ui.Context, store *state.Store) {
+func render(c *ui.Context, store *state.Store, events *event.Engine) {
 	t := c.Theme()
 	width, _ := c.Size()
 	ungrouped, clusters := groupByCluster(store.Snapshot())
 
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
-		ui.Row(c).Padding(8, 10, 0, 10).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "Watchtower").FontSize(12).TextColor(t.TextMuted)
-			if ui.Button(c.Key("theme"), themeLabel()).FontSize(11).Clicked() {
-				cycleTheme()
-			}
-		})
-		ui.Scroll(c).Fill().Padding(10).Gap(8).Children(func() {
-			if len(ungrouped) == 0 && len(clusters) == 0 {
+		toolbar(c)
+
+		if len(ungrouped) == 0 && len(clusters) == 0 {
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 				ui.Text(c, "waiting for data…").FontSize(13).TextColor(t.TextMuted)
-				return
-			}
+			})
+			return
+		}
+
+		if width >= breakpointWide {
+			renderMasterDetail(c, store, events, ungrouped, clusters)
+			return
+		}
+
+		ui.Scroll(c).Fill().Padding(10).Gap(8).Children(func() {
 			for i := range ungrouped {
 				serverRow(c, width, ungrouped[i])
 			}
