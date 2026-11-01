@@ -1,0 +1,7 @@
+name: broken
+connection:
+  type: ssh
+  user: monitoring
+  key: ~/.ssh/id_ed25519
+groups:
+  - basic

@@ -1,0 +1,207 @@
+// Package sshmgr manages persistent SSH connections to servers. One
+// *ssh.Client is kept per server and reused; individual commands each get
+// their own session/channel, so one metric's command never blocks another.
+package sshmgr
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
+
+	"aymanhs/watchtower/internal/server"
+)
+
+// Client is a persistent SSH connection to one server. It dials lazily on
+// first use and transparently redials if the connection has gone away, so
+// a server flapping never requires restarting the process.
+type Client struct {
+	cfg *server.Config
+
+	mu   sync.Mutex
+	conn *ssh.Client
+}
+
+// Manager owns one Client per server, keyed by server name.
+type Manager struct {
+	mu      sync.Mutex
+	clients map[string]*Client
+}
+
+func NewManager() *Manager {
+	return &Manager{clients: make(map[string]*Client)}
+}
+
+// Client returns the persistent client for cfg, creating it if necessary.
+// It does not dial; dialing happens lazily inside Run so start-up never
+// blocks on a slow or unreachable server.
+func (m *Manager) Client(cfg *server.Config) *Client {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c, ok := m.clients[cfg.Name]; ok {
+		return c
+	}
+	c := &Client{cfg: cfg}
+	m.clients[cfg.Name] = c
+	return c
+}
+
+// Run executes command on a new session/channel over the persistent
+// connection, bounded by timeout. Stdout is returned on success. A
+// non-zero exit, a transport error or a timeout is returned as an error —
+// never as an empty or zero result, so a collection failure can't be
+// mistaken for a measurement.
+func (c *Client) Run(ctx context.Context, command string, timeout time.Duration) (string, error) {
+	c.mu.Lock()
+	if err := c.ensureConnectedLocked(); err != nil {
+		c.mu.Unlock()
+		return "", fmt.Errorf("connect: %w", err)
+	}
+	conn := c.conn
+	c.mu.Unlock()
+
+	session, err := conn.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("open session: %w", err)
+	}
+	defer session.Close()
+
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if err := session.Start(command); err != nil {
+		return "", fmt.Errorf("start command: %w", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- session.Wait() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return "", fmt.Errorf("command exited with error: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		}
+		return stdout.String(), nil
+	case <-runCtx.Done():
+		session.Close() // closing the channel terminates the remote process on virtually all sshd configs
+		return "", fmt.Errorf("command timed out after %s", timeout)
+	}
+}
+
+// ensureConnectedLocked dials (or redials) the SSH connection if needed.
+// Caller must hold c.mu.
+func (c *Client) ensureConnectedLocked() error {
+	if c.conn != nil {
+		// Cheap liveness probe: any global request round-trip proves the
+		// transport is alive, whether or not the server understands it.
+		if _, _, err := c.conn.SendRequest("keepalive@watchtower", true, nil); err == nil {
+			return nil
+		}
+		c.conn.Close()
+		c.conn = nil
+	}
+
+	auth, err := authMethods(c.cfg.Connection.Key)
+	if err != nil {
+		return fmt.Errorf("auth setup: %w", err)
+	}
+	hostKeyCB, err := hostKeyCallback()
+	if err != nil {
+		return fmt.Errorf("host key verification setup: %w", err)
+	}
+
+	addr := net.JoinHostPort(c.cfg.Connection.Host, fmt.Sprintf("%d", c.cfg.Connection.Port))
+	clientCfg := &ssh.ClientConfig{
+		User:            c.cfg.Connection.User,
+		Auth:            auth,
+		HostKeyCallback: hostKeyCB,
+		Timeout:         10 * time.Second,
+	}
+
+	conn, err := ssh.Dial("tcp", addr, clientCfg)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w", addr, err)
+	}
+	c.conn = conn
+	return nil
+}
+
+// authMethods prefers a running ssh-agent (handles passphrase-protected
+// keys) and falls back to reading keyPath directly.
+func authMethods(keyPath string) ([]ssh.AuthMethod, error) {
+	var methods []ssh.AuthMethod
+
+	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+		if conn, err := net.Dial("unix", sock); err == nil {
+			ag := agent.NewClient(conn)
+			methods = append(methods, ssh.PublicKeysCallback(ag.Signers))
+		}
+	}
+
+	if keyPath != "" {
+		expanded, err := expandHome(keyPath)
+		if err != nil {
+			return nil, err
+		}
+		keyBytes, readErr := os.ReadFile(expanded)
+		if readErr != nil {
+			if len(methods) > 0 {
+				return methods, nil // agent may still work without this key
+			}
+			return nil, fmt.Errorf("read key %s: %w", expanded, readErr)
+		}
+		signer, parseErr := ssh.ParsePrivateKey(keyBytes)
+		if parseErr != nil {
+			if len(methods) > 0 {
+				return methods, nil
+			}
+			return nil, fmt.Errorf("parse key %s: %w (passphrase-protected keys need ssh-agent)", expanded, parseErr)
+		}
+		methods = append(methods, ssh.PublicKeys(signer))
+	}
+
+	if len(methods) == 0 {
+		return nil, fmt.Errorf("no usable auth method: no ssh-agent (SSH_AUTH_SOCK unset) and no usable key at %q", keyPath)
+	}
+	return methods, nil
+}
+
+// hostKeyCallback verifies server identity against the user's known_hosts,
+// per the brief's host-key verification requirement. An unknown or changed
+// host key is rejected, not silently accepted.
+func hostKeyCallback() (ssh.HostKeyCallback, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(home, ".ssh", "known_hosts")
+	cb, err := knownhosts.New(path)
+	if err != nil {
+		return nil, fmt.Errorf("load known_hosts %s: %w", path, err)
+	}
+	return cb, nil
+}
+
+func expandHome(path string) (string, error) {
+	if !strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~")), nil
+}

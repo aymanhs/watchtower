@@ -1,0 +1,29 @@
+name: cpu
+description: Load averages
+groups:
+  - basic
+  - linux
+tags:
+  - system
+  - resource
+interval: 5s
+timeout: 3s
+collector:
+  type: shell
+  command: |
+    awk '{print "load1=" $1; print "load5=" $2; print "load15=" $3}' /proc/loadavg
+metrics:
+  load1:
+    unit: load
+    type: gauge
+  load5:
+    unit: load
+    type: gauge
+  load15:
+    unit: load
+    type: gauge
+events:
+  - name: cpu.load1.warning
+    condition: above
+    threshold: 4
+    severity: warning

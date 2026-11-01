@@ -1,0 +1,11 @@
+name: server2
+
+connection:
+  type: ssh
+  host: 192.168.1.21
+  user: monitoring
+  key: ~/.ssh/id_ed25519
+
+groups:
+  - basic
+  - linux

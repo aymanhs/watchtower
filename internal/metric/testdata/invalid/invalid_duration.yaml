@@ -1,0 +1,11 @@
+name: broken
+groups: [basic]
+interval: not-a-duration
+timeout: 5s
+collector:
+  type: shell
+  command: echo x=1
+metrics:
+  x:
+    unit: count
+    type: gauge

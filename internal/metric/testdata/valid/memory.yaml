@@ -1,0 +1,48 @@
+name: memory
+description: System memory statistics
+groups:
+  - basic
+  - linux
+tags:
+  - system
+  - resource
+interval: 10s
+timeout: 5s
+collector:
+  type: shell
+  command: |
+    free -b | awk '
+      /Mem:/ {
+        print "total=" $2
+        print "used=" $3
+        print "free=" $4
+        print "shared=" $5
+        print "cache=" $6
+        print "available=" $7
+      }'
+metrics:
+  total:
+    unit: bytes
+    type: gauge
+  used:
+    unit: bytes
+    type: gauge
+  free:
+    unit: bytes
+    type: gauge
+  cache:
+    unit: bytes
+    type: gauge
+  available:
+    unit: bytes
+    type: gauge
+events:
+  - name: memory.available.warning
+    condition: below
+    threshold: 536870912
+    severity: warning
+  - name: memory.available.critical
+    condition: below
+    threshold: 134217728
+    severity: critical
+    recover_above: 268435456

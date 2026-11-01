@@ -1,0 +1,16 @@
+name: server1
+
+connection:
+  type: ssh
+  host: 192.168.1.20
+  port: 22
+  user: monitoring
+  key: ~/.ssh/id_ed25519
+
+groups:
+  - basic
+  - linux
+
+metrics:
+  memory:
+    interval: 5s
