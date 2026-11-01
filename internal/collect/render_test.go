@@ -2,6 +2,8 @@ package collect
 
 import (
 	"context"
+	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -18,6 +20,10 @@ type recordingRunner struct {
 func (r *recordingRunner) Run(ctx context.Context, command string, timeout time.Duration) (string, error) {
 	r.gotCommand = command
 	return r.out, nil
+}
+
+func (r *recordingRunner) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return nil, errors.New("recordingRunner: DialContext not implemented")
 }
 
 func natsDef() *metric.Definition {

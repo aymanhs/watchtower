@@ -98,6 +98,18 @@ type MeasurementView struct {
 	Primary bool
 	Scale   *Scale // nil unless Widget needs one and it resolved successfully
 	Zones   []Zone // only ever set for a Gauge; nil if the measurement has no event rules to derive bands from
+	Label   string // human-friendly name to show instead of Key; "" means show Key
+}
+
+// DisplayLabel is what a GUI should show for this measurement's name —
+// Label if the metric definition set one, Key otherwise. Centralized here
+// so every presentation applies the same rule, rather than each one
+// re-checking "is Label empty" itself.
+func (m MeasurementView) DisplayLabel() string {
+	if m.Label != "" {
+		return m.Label
+	}
+	return m.Key
 }
 
 // MetricView is one metric definition's current state on one server: its

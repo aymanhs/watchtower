@@ -60,6 +60,17 @@ func TestLoadServers_RejectsDuplicateName(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_LocalConnectionNeedsNoHostUserKey(t *testing.T) {
+	c := &Config{
+		Name:       "local1",
+		Connection: Connection{Type: ConnectionLocal},
+		Groups:     []string{"basic"},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("local connection should need no host/user/key: %v", err)
+	}
+}
+
 func TestConfigValidate_RejectsUnsupportedConnectionType(t *testing.T) {
 	c := &Config{
 		Name: "x",

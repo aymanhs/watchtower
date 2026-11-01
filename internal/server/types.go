@@ -18,13 +18,17 @@ import (
 	"aymanhs/watchtower/internal/metric"
 )
 
-// ConnectionType identifies the transport used to reach a server. SSH is the
-// only one implemented initially; the field exists so others can be added
-// without reshaping Config.
+// ConnectionType identifies the transport used to reach a server.
 type ConnectionType string
 
 const (
 	ConnectionSSH ConnectionType = "ssh"
+	// ConnectionLocal runs collector commands directly on the machine
+	// Watchtower itself is running on — no SSH hop, Host/Port/User/Key
+	// are unused. For endpoints reachable straight from wherever
+	// Watchtower runs, where SSH-ing into some other host would be
+	// pointless. See internal/localrun for exactly how it executes.
+	ConnectionLocal ConnectionType = "local"
 )
 
 // Connection describes how to reach a server. Key is a path to a private
@@ -70,20 +74,25 @@ func (c *Config) Validate() error {
 	if c.Name == "" {
 		return fmt.Errorf("server config missing name")
 	}
-	if c.Connection.Type != ConnectionSSH {
+	switch c.Connection.Type {
+	case ConnectionSSH:
+		if c.Connection.Host == "" {
+			return fmt.Errorf("server %q: connection.host is required", c.Name)
+		}
+		if c.Connection.Port == 0 {
+			c.Connection.Port = 22
+		}
+		if c.Connection.User == "" {
+			return fmt.Errorf("server %q: connection.user is required", c.Name)
+		}
+		if c.Connection.Key == "" {
+			return fmt.Errorf("server %q: connection.key is required (path to private key)", c.Name)
+		}
+	case ConnectionLocal:
+		// Host/Port/User/Key are meaningless for a local server; nothing
+		// to validate beyond the type itself being recognized.
+	default:
 		return fmt.Errorf("server %q: unsupported connection type %q", c.Name, c.Connection.Type)
-	}
-	if c.Connection.Host == "" {
-		return fmt.Errorf("server %q: connection.host is required", c.Name)
-	}
-	if c.Connection.Port == 0 {
-		c.Connection.Port = 22
-	}
-	if c.Connection.User == "" {
-		return fmt.Errorf("server %q: connection.user is required", c.Name)
-	}
-	if c.Connection.Key == "" {
-		return fmt.Errorf("server %q: connection.key is required (path to private key)", c.Name)
 	}
 	if len(c.Groups) == 0 {
 		return fmt.Errorf("server %q: must select at least one group", c.Name)

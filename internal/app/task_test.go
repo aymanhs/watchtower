@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -20,6 +21,12 @@ type fakeRunner struct {
 
 func (f fakeRunner) Run(ctx context.Context, command string, timeout time.Duration) (string, error) {
 	return f.out, f.err
+}
+
+// DialContext is never exercised by these shell-collector tests; it only
+// exists so fakeRunner satisfies collect.Backend.
+func (f fakeRunner) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return nil, errors.New("fakeRunner: DialContext not implemented")
 }
 
 func diskDef() *metric.Definition {
@@ -42,7 +49,7 @@ func diskDef() *metric.Definition {
 			},
 			"used_percent": {
 				Unit: "percent", Type: metric.TypeGauge,
-				Display: &metric.Display{Widget: metric.WidgetGauge, Primary: true, Scale: &metric.Scale{Min: 0, Max: 100}},
+				Display: &metric.Display{Widget: metric.WidgetGauge, Primary: true, Scale: &metric.Scale{Min: 0, Max: 100}, Label: "Disk Usage"},
 			},
 		},
 		Events: []metric.EventRule{
@@ -120,6 +127,12 @@ func TestMetricTask_ResolvesDisplayIntoStore(t *testing.T) {
 	}
 	if pct.Widget != metric.WidgetGauge {
 		t.Errorf("used_percent.Widget = %q, want gauge", pct.Widget)
+	}
+	if pct.DisplayLabel() != "Disk Usage" {
+		t.Errorf("used_percent.DisplayLabel() = %q, want %q (from display.label)", pct.DisplayLabel(), "Disk Usage")
+	}
+	if total.DisplayLabel() != "total" {
+		t.Errorf("total.DisplayLabel() = %q, want %q (falls back to Key with no label)", total.DisplayLabel(), "total")
 	}
 	wantZones := []state.Zone{
 		{From: 0, To: 80, Severity: ""},

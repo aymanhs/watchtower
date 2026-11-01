@@ -9,8 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"aymanhs/watchtower/internal/collect"
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/group"
+	"aymanhs/watchtower/internal/localrun"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/server"
@@ -65,11 +67,19 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 	}
 
 	mgr := sshmgr.NewManager()
-	clients := make(map[string]*sshmgr.Client, len(servers))
+	local := localrun.New() // stateless; every "local" server shares the one instance
+	runners := make(map[string]collect.Backend, len(servers))
+	sshClients := make(map[string]*sshmgr.Client) // the subset needing an up-front connect
 	for _, cfg := range servers {
-		clients[cfg.Name] = mgr.Client(cfg)
+		if cfg.Connection.Type == server.ConnectionLocal {
+			runners[cfg.Name] = local
+			continue
+		}
+		client := mgr.Client(cfg)
+		runners[cfg.Name] = client
+		sshClients[cfg.Name] = client
 	}
-	connectAll(ctx, clients)
+	connectAll(ctx, sshClients)
 
 	var tasks []scheduler.Task
 	for _, cfg := range servers {
@@ -78,7 +88,7 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 			log.Printf("server %s: no metrics resolved from groups %v", cfg.Name, cfg.Groups)
 			continue
 		}
-		client := clients[cfg.Name]
+		runner := runners[cfg.Name]
 		if store != nil {
 			store.SetCluster(cfg.Name, cfg.Cluster)
 		}
@@ -88,7 +98,7 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 			tasks = append(tasks, &MetricTask{
 				ServerName:      cfg.Name,
 				Def:             def,
-				Client:          client,
+				Client:          runner,
 				CollectInterval: interval,
 				Deadline:        timeout,
 				Config:          config,

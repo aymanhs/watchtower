@@ -227,7 +227,7 @@ func metricLine(c *ui.Context, t *ui.Theme, mv state.MetricView) {
 			case m.Primary && m.Scale != nil:
 				primary = &m
 			case m.Widget == metric.WidgetBar && m.Scale != nil:
-				bars = append(bars, barEntry{m.Key, m.Value, *m.Scale, m.Zones, formatValue(m.Unit, m.Value)})
+				bars = append(bars, barEntry{m.DisplayLabel(), m.Value, *m.Scale, m.Zones, formatValue(m.Unit, m.Value)})
 			default:
 				// Includes WidgetDot (not yet rendered inline here — a
 				// metric line already has its own status dot) and any
@@ -256,7 +256,7 @@ func metricLine(c *ui.Context, t *ui.Theme, mv state.MetricView) {
 		if len(plain) > 0 {
 			ui.Row(c).Gap(10).Children(func() {
 				for _, m := range plain {
-					ui.Text(c, m.Key+"="+formatValue(m.Unit, m.Value)).FontSize(12)
+					ui.Text(c, m.DisplayLabel()+"="+formatValue(m.Unit, m.Value)).FontSize(12)
 				}
 			})
 		}

@@ -24,8 +24,8 @@ import (
 type MetricTask struct {
 	ServerName                string
 	Def                       *metric.Definition
-	Client                    collect.Runner // typically *sshmgr.Client; an interface so this is testable without a real SSH connection
-	CollectInterval, Deadline time.Duration  // Deadline: per-execution timeout (named to avoid colliding with the Timeout() method below)
+	Client                    collect.Backend // typically *sshmgr.Client or *localrun.Runner; an interface so this is testable without a real SSH connection
+	CollectInterval, Deadline time.Duration   // Deadline: per-execution timeout (named to avoid colliding with the Timeout() method below)
 	// Config is this (server, metric) pair's fully-resolved collector
 	// parameters (see internal/app.effective), substituted into the
 	// collector's command template. Empty for the common case of a
@@ -90,6 +90,7 @@ func (t *MetricTask) Run(ctx context.Context) error {
 		if disp := def.Display; disp != nil {
 			mv.Widget = disp.Widget
 			mv.Primary = disp.Primary
+			mv.Label = disp.Label
 			scale, err := state.ResolveScale(disp.Scale, rawValues)
 			if err != nil {
 				// A bad max_ref this cycle (e.g. the sibling momentarily

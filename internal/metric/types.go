@@ -32,14 +32,37 @@ func (t Type) valid() bool {
 type CollectorType string
 
 const (
-	// CollectorShell runs Command as a shell command over the SSH session.
+	// CollectorShell runs Command as a shell command — over SSH on the
+	// target server, or locally for a "local" server. POSIX shell
+	// (awk, curl, vmstat, ...), so only works where such a shell exists.
 	CollectorShell CollectorType = "shell"
+	// CollectorHTTP fetches URL and decodes it as JSON, natively in Go —
+	// no shell, curl or jq anywhere, on any platform, remote or local.
+	// For an SSH-based server the connection is tunneled through the
+	// existing SSH session (so a loopback-bound endpoint like NATS's own
+	// monitoring port is reachable exactly as if running on that host);
+	// for a "local" server it dials directly. See internal/collect.
+	CollectorHTTP CollectorType = "http"
 )
 
 // Collector describes how to produce raw measurement output.
 type Collector struct {
-	Type    CollectorType `yaml:"type"`
-	Command string        `yaml:"command"`
+	Type CollectorType `yaml:"type"`
+
+	// Command is the shell command, for CollectorShell. A Go text
+	// template rendered against the server's resolved config (Render).
+	Command string `yaml:"command,omitempty"`
+
+	// URL is the endpoint to GET and decode as JSON, for CollectorHTTP.
+	// Also a template rendered against config (RenderURL).
+	URL string `yaml:"url,omitempty"`
+	// Fields maps a measurement key to the JSON field (dot-separated for
+	// one level of nesting, e.g. "cluster.name") that holds its value.
+	// A measurement with no entry here defaults to a JSON field of the
+	// same name — the common case, since most APIs' field names already
+	// match what you'd want to call the measurement — so Fields is only
+	// needed to rename or reach into a nested one.
+	Fields map[string]string `yaml:"fields,omitempty"`
 }
 
 // Measurement describes one named value returned by a single collector execution.
@@ -168,6 +191,18 @@ func (d *Definition) Validate() error {
 		// every server would hit, so catch it once, here, at load time.
 		if _, err := template.New("collector").Parse(d.Collector.Command); err != nil {
 			return fmt.Errorf("metric %q: collector.command is not a valid template: %w", d.Name, err)
+		}
+	case CollectorHTTP:
+		if d.Collector.URL == "" {
+			return fmt.Errorf("metric %q: http collector requires a url", d.Name)
+		}
+		if _, err := template.New("collector").Parse(d.Collector.URL); err != nil {
+			return fmt.Errorf("metric %q: collector.url is not a valid template: %w", d.Name, err)
+		}
+		for key, field := range d.Collector.Fields {
+			if field == "" {
+				return fmt.Errorf("metric %q: collector.fields[%q] is empty", d.Name, key)
+			}
 		}
 	case "":
 		return fmt.Errorf("metric %q: collector.type is required", d.Name)

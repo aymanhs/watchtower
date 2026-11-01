@@ -57,6 +57,13 @@ type Display struct {
 	Widget  Widget `yaml:"widget,omitempty"`
 	Primary bool   `yaml:"primary,omitempty"`
 	Scale   *Scale `yaml:"scale,omitempty"`
+
+	// Label is a human-friendly name the GUI shows instead of the raw
+	// measurement key — useful wherever that key is just whatever a
+	// collector's source happens to call it (a JSON field name, say) and
+	// isn't what you'd want to read in a control room. Unset means show
+	// the key as-is, exactly as before this field existed.
+	Label string `yaml:"label,omitempty"`
 }
 
 // validateDisplay checks one measurement's Display block, if present,

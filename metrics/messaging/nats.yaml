@@ -8,54 +8,57 @@ tags:
 interval: 15s
 timeout: 5s
 collector:
-  type: shell
-  # curl's own exit code is captured explicitly and the command exits
-  # non-zero on failure *before* reaching jq — a bare "curl | jq" pipeline
-  # reports jq's exit code, not curl's, so a down/unmonitored endpoint
-  # (connection refused, empty stdin to jq) would otherwise look like a
-  # successful collection with zero measurements, not a failure. --fail
-  # also turns an HTTP error response (e.g. wrong path) into a failure,
-  # not just a connection-level one.
-  command: |
-    body=$(curl -sf --max-time 3 "http://{{.endpoint}}/varz") || exit 1
-    echo "$body" | jq -r '
-      "connections=" + (.connections|tostring),
-      "in_msgs=" + (.in_msgs|tostring),
-      "out_msgs=" + (.out_msgs|tostring),
-      "in_bytes=" + (.in_bytes|tostring),
-      "out_bytes=" + (.out_bytes|tostring),
-      "slow_consumers=" + (.slow_consumers|tostring),
-      "mem=" + (.mem|tostring),
-      "cpu=" + (.cpu|tostring)
-    '
+  # Native Go: fetched and JSON-decoded in-process, no curl/jq on the
+  # target at all — works identically on Windows and POSIX, local or (for
+  # an ssh-type server) tunneled through the existing SSH session so a
+  # loopback-bound endpoint like this one is reached exactly as if running
+  # on that host. No "fields:" needed below — every measurement key here
+  # already matches its JSON field name in varz.
+  type: http
+  url: "http://{{.endpoint}}/varz"
 metrics:
   connections:
     unit: count
     type: gauge
+    display:
+      label: Connections
   in_msgs:
     unit: count
     type: counter
+    display:
+      label: In Messages
   out_msgs:
     unit: count
     type: counter
+    display:
+      label: Out Messages
   in_bytes:
     unit: bytes
     type: counter
+    display:
+      label: In
   out_bytes:
     unit: bytes
     type: counter
+    display:
+      label: Out
   slow_consumers:
     unit: count
     type: gauge
+    display:
+      label: Slow Consumers
   mem:
     unit: bytes
     type: gauge
+    display:
+      label: Memory
   cpu:
     unit: percent
     type: gauge
     display:
       widget: gauge
       primary: true
+      label: CPU
       scale:
         min: 0
         max: 100

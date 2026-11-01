@@ -112,6 +112,41 @@ func (c *Client) Run(ctx context.Context, command string, timeout time.Duration)
 	}
 }
 
+// DialContext opens a TCP connection tunneled through this SSH session —
+// so "localhost:8222" reaches that port as the remote server sees it, not
+// as this machine does. Satisfies collect.Dialer, for a CollectorHTTP
+// definition to fetch a loopback-bound endpoint on an ssh-type server
+// exactly as if it were running there itself, no remote shell needed.
+//
+// golang.org/x/crypto/ssh.Client.Dial has no context parameter; ctx
+// cancellation is applied here by racing it against the dial.
+func (c *Client) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	c.mu.Lock()
+	if err := c.ensureConnectedLocked(); err != nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	conn := c.conn
+	c.mu.Unlock()
+
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		nc, err := conn.Dial(network, address)
+		ch <- result{nc, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.conn, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // ensureConnectedLocked dials (or redials) the SSH connection if needed.
 // Caller must hold c.mu.
 func (c *Client) ensureConnectedLocked() error {

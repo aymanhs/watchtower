@@ -3,6 +3,7 @@ package collect
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -16,6 +17,12 @@ type fakeRunner struct {
 
 func (f fakeRunner) Run(ctx context.Context, command string, timeout time.Duration) (string, error) {
 	return f.out, f.err
+}
+
+// DialContext is never exercised by these shell-collector tests; it only
+// exists so fakeRunner satisfies Backend.
+func (f fakeRunner) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return nil, errors.New("fakeRunner: DialContext not implemented")
 }
 
 func testDef() *metric.Definition {
