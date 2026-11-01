@@ -6,3 +6,6 @@
 /bin/
 *.test
 *.out
+
+# Build output (make build / mygo build)
+/dist/

@@ -55,8 +55,14 @@ Phases per the original project brief. Check `git log` for commit-level detail; 
 - **Concurrency cap is a hardcoded const** (`maxConcurrentCollections = 16` in `main.go`), not exposed as config yet.
 - **No credentials beyond SSH key file / ssh-agent** — satisfies "no plaintext passwords," nothing fancier (vault, etc.) built or asked for.
 
+## Build
+
+- **Windows is the primary target** — `make build` (default) cross-compiles the GUI with MyGo's own `mygo build` tool from this Linux/WSL machine, no cgo/mingw/NSIS required for the plain executable. Output: `dist/windows-amd64/Watchtower.exe` (GUI subsystem, no console flash) + `watchtower-console.exe` (the diagnostic console binary, console subsystem, on purpose).
+- `make build-linux` / `make run` / `make test` for local dev iteration.
+- `mygo.json` is intentionally minimal (name/slug/main/version) — no icon yet (`resources/icon.png`), no installer (needs `makensis`/NSIS, currently skipped gracefully), no code signing. All straightforward to add later via the same `mygo.json`.
+
 ## Repo housekeeping
 
 - Public-safe: audited for secrets/real hosts, clean. Real server configs live in `data/` (gitignored); `metrics/` and `groups/` are the committed product library/examples.
-- Branch is `main`; commit identity is repo-local (`aymanhs <aymanhs@users.noreply.github.com>`), not your work email.
+- Branch is `main`; commit identity is the user's own real name/email (their call).
 - **I don't run `git commit` in this repo (or any other) — that's left to you.**

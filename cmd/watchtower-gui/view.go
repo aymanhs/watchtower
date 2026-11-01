@@ -79,31 +79,69 @@ func serverRow(c *ui.Context, width float32, sv state.ServerView) {
 }
 
 func metricLine(c *ui.Context, t *ui.Theme, mv state.MetricView) {
-	ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(0, 0, 0, 22).Children(func() {
+	ui.Row(c).Gap(12).AlignItems(ui.Center).Padding(0, 0, 0, 22).Children(func() {
 		statusDot(c, mv.Status, 8)
-		ui.Text(c, mv.Name).FontSize(12).Width(70).TextColor(t.TextMuted)
+		ui.Text(c, mv.Name).FontSize(12).Width(60).TextColor(t.TextMuted)
 		if mv.Stale {
 			ui.Text(c, "stale: "+mv.LastError).FontSize(12).TextColor(t.Danger)
 			return
 		}
 		color := statusColor(t, mv.Status)
-		var plain []state.MeasurementView
+
+		// total scales "bytes" measurements into bars proportional to it
+		// (used/free/cache/available as a share of total) — no separate
+		// magic number needed, the metric already carries its own 100%
+		// reference.
+		var totalBytes float64
 		for _, m := range mv.Measurements {
-			if m.Unit != "percent" {
-				plain = append(plain, m)
-				continue
+			if m.Unit == "bytes" && m.Key == "total" {
+				totalBytes = m.Value
 			}
-			frac := clampFraction(m.Value)
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				circularGauge(c, frac, color, 36, percentLabel(m.Value))
-				bar(c, frac, color, 70, 8)
+		}
+
+		// One primary percent measurement becomes the big pressure gauge;
+		// "load" measurements and bytes-with-a-total each get their own
+		// small bar; everything else (including total itself) stays text.
+		var primaryPercent *state.MeasurementView
+		var bars []barEntry
+		var plain []state.MeasurementView
+		for i := range mv.Measurements {
+			m := mv.Measurements[i]
+			switch {
+			case m.Unit == "percent" && primaryPercent == nil:
+				primaryPercent = &m
+			case m.Unit == "load":
+				bars = append(bars, barEntry{m.Key, barFraction("load", m.Value), formatValue(m.Unit, m.Value)})
+			case m.Unit == "bytes" && m.Key != "total" && totalBytes > 0:
+				bars = append(bars, barEntry{m.Key, clamp01(float32(m.Value / totalBytes)), formatValue(m.Unit, m.Value)})
+			default:
+				plain = append(plain, m)
+			}
+		}
+
+		if primaryPercent != nil {
+			pressureGauge(c, barFraction(primaryPercent.Unit, primaryPercent.Value), color, 64, percentLabel(primaryPercent.Value))
+		}
+
+		if len(bars) > 0 {
+			ui.Column(c).Gap(4).Children(func() {
+				for _, be := range bars {
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, be.label).FontSize(11).Width(40).TextColor(t.TextMuted)
+						bar(c, be.frac, color, 90, 6)
+						ui.Text(c, be.text).FontSize(11)
+					})
+				}
 			})
 		}
-		ui.Row(c).Gap(10).Children(func() {
-			for _, m := range plain {
-				ui.Text(c, m.Key+"="+formatValue(m.Unit, m.Value)).FontSize(12)
-			}
-		})
+
+		if len(plain) > 0 {
+			ui.Row(c).Gap(10).Children(func() {
+				for _, m := range plain {
+					ui.Text(c, m.Key+"="+formatValue(m.Unit, m.Value)).FontSize(12)
+				}
+			})
+		}
 	})
 }
 

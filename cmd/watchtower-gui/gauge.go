@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/egoist/mygo/ui"
 
@@ -26,10 +27,9 @@ func statusColor(t *ui.Theme, status state.Status) ui.Color {
 	}
 }
 
-// clampFraction maps a 0-100 percent value to a 0-1 draw fraction, clamped
-// so an out-of-range reading never overflows or underflows the widget.
-func clampFraction(percent float64) float32 {
-	f := float32(percent / 100)
+// clamp01 keeps a draw fraction within [0,1] so an out-of-range reading
+// never overflows or underflows a bar or gauge.
+func clamp01(f float32) float32 {
 	switch {
 	case f < 0:
 		return 0
@@ -38,6 +38,32 @@ func clampFraction(percent float64) float32 {
 	default:
 		return f
 	}
+}
+
+// barFraction maps a raw measurement to a 0-1 draw fraction, by unit.
+// Percent is the natural 0-100 scale. Load averages have no fixed max —
+// 4.0 is a reasonable "fully loaded" reference for a small box (and
+// happens to match this library's own cpu.load1.warning threshold); a
+// nicer version would size this per-server from core count, not hardcode
+// it here.
+func barFraction(unit string, value float64) float32 {
+	switch unit {
+	case "percent":
+		return clamp01(float32(value / 100))
+	case "load":
+		return clamp01(float32(value / 4))
+	default:
+		return 0
+	}
+}
+
+// barEntry is one already-resolved small bar: whatever scale its
+// measurement used (percent, load, or a share of some total), by the time
+// it's a barEntry it's just a fraction and a label.
+type barEntry struct {
+	label string
+	frac  float32
+	text  string
 }
 
 // bar draws a horizontal progress bar: a track in the theme's muted
@@ -54,32 +80,80 @@ func bar(c *ui.Context, frac float32, color ui.Color, w, h float32) ui.Element {
 	return e
 }
 
-// circularGauge draws a ring progress indicator: a full muted-color
-// circle as the track, with an arc of frac's length drawn over it in
-// color, round-capped. centerLabel prints in the middle (typically the
-// percentage, e.g. "42%").
-func circularGauge(c *ui.Context, frac float32, color ui.Color, diameter float32, centerLabel string) ui.Element {
+// (circularGauge, the earlier full-ring design, was replaced by
+// pressureGauge below — a dial reads more like a gauge than a donut.)
+
+// Pressure-gauge sweep: starts bottom-left, goes clockwise over the top,
+// ends bottom-right — the classic speedometer shape, with a gap at the
+// bottom. Angles are degrees in mygo's screen-space convention (0° = East,
+// increasing clockwise since Y grows downward).
+const (
+	gaugeStartDeg = 135.0
+	gaugeSweepDeg = 270.0
+)
+
+// pressureGauge draws a dial-style arc gauge: a full-sweep track in the
+// theme's muted border color, and a progress arc of frac's share of the
+// sweep in color, round-capped, with centerLabel (typically "42%") in the
+// middle. mygo's Path only offers a full circle as a primitive, so the arc
+// itself is hand-built from cubic Beziers (buildArc) rather than trimmed
+// from one.
+func pressureGauge(c *ui.Context, frac float32, color ui.Color, diameter float32, centerLabel string) ui.Element {
 	t := c.Theme()
-	stroke := diameter * 0.14
+	stroke := diameter * 0.15
 	e := ui.Box(c).Size(diameter, diameter).AlignItems(ui.Center).Justify(ui.Center)
 	e.Draw(func(p *ui.Painter, r ui.Rect) {
 		cx, cy := r.X+r.W/2, r.Y+r.H/2
 		radius := r.W/2 - stroke/2
 
-		track := new(ui.Path)
-		track.Circle(cx, cy, radius)
+		track := buildArc(cx, cy, radius, gaugeStartDeg, gaugeSweepDeg)
+		track.Cap(ui.RoundCap)
 		p.StrokePath(track, stroke, t.Border)
 
 		if frac > 0 {
-			progress := new(ui.Path)
-			progress.Circle(cx, cy, radius).Trim(0, frac).Cap(ui.RoundCap)
+			progress := buildArc(cx, cy, radius, gaugeStartDeg, gaugeSweepDeg*float64(frac))
+			progress.Cap(ui.RoundCap)
 			p.StrokePath(progress, stroke, color)
 		}
 	})
 	e.Children(func() {
-		ui.Text(c, centerLabel).FontSize(diameter * 0.26).Bold().TextColor(t.Text)
+		ui.Text(c, centerLabel).FontSize(diameter * 0.22).Bold().TextColor(t.Text)
 	})
 	return e
+}
+
+// buildArc approximates a circular arc from startDeg, sweeping sweepDeg
+// clockwise, as cubic Bezier segments no wider than 45° each (the same
+// per-segment accuracy mygo's own Circle uses for a full 360° circle,
+// via the standard kappa = 4/3*tan(segment/4) construction).
+func buildArc(cx, cy, r float32, startDeg, sweepDeg float64) *ui.Path {
+	path := new(ui.Path)
+	if sweepDeg == 0 {
+		return path
+	}
+	const maxSegDeg = 45.0
+	segments := int(math.Ceil(math.Abs(sweepDeg) / maxSegDeg))
+	if segments < 1 {
+		segments = 1
+	}
+	segRad := (sweepDeg / float64(segments)) * math.Pi / 180
+	alpha := float32(4.0 / 3.0 * math.Tan(segRad/4))
+
+	theta := startDeg * math.Pi / 180
+	x0 := cx + r*float32(math.Cos(theta))
+	y0 := cy + r*float32(math.Sin(theta))
+	path.MoveTo(x0, y0)
+
+	for i := 0; i < segments; i++ {
+		theta2 := theta + segRad
+		x3 := cx + r*float32(math.Cos(theta2))
+		y3 := cy + r*float32(math.Sin(theta2))
+		t1x, t1y := -float32(math.Sin(theta)), float32(math.Cos(theta))
+		t2x, t2y := -float32(math.Sin(theta2)), float32(math.Cos(theta2))
+		path.CubeTo(x0+alpha*r*t1x, y0+alpha*r*t1y, x3-alpha*r*t2x, y3-alpha*r*t2y, x3, y3)
+		x0, y0, theta = x3, y3, theta2
+	}
+	return path
 }
 
 // percentLabel formats a percent-unit value for a gauge's center label.
