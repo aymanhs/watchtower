@@ -24,6 +24,7 @@ metrics:
     type: gauge
 events:
   - name: cpu.load1.warning
+    measurement: load1
     condition: above
     threshold: 4
     severity: warning

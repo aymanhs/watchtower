@@ -38,10 +38,12 @@ metrics:
     type: gauge
 events:
   - name: memory.available.warning
+    measurement: available
     condition: below
     threshold: 536870912
     severity: warning
   - name: memory.available.critical
+    measurement: available
     condition: below
     threshold: 134217728
     severity: critical

@@ -13,10 +13,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 
 	"aymanhs/watchtower/internal/collect"
+	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/group"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/scheduler"
@@ -107,6 +109,7 @@ func main() {
 	}()
 
 	mgr := sshmgr.NewManager()
+	events := event.NewEngine(0)
 
 	clients := make(map[string]*sshmgr.Client, len(servers))
 	for _, cfg := range servers {
@@ -131,6 +134,7 @@ func main() {
 				client:     client,
 				interval:   interval,
 				timeout:    timeout,
+				events:     events,
 			})
 		}
 	}
@@ -156,12 +160,13 @@ func effective(groupReg *group.Registry, cfg *server.Config, def *metric.Definit
 
 // metricTask adapts one (server, metric definition) pair to scheduler.Task.
 // It is the only place that bridges the generic scheduler to the
-// SSH/collect machinery.
+// SSH/collect machinery and the event engine.
 type metricTask struct {
 	serverName        string
 	def               *metric.Definition
 	client            *sshmgr.Client
 	interval, timeout time.Duration
+	events            *event.Engine
 }
 
 func (t *metricTask) Name() string            { return t.serverName + "/" + t.def.Name }
@@ -170,11 +175,33 @@ func (t *metricTask) Timeout() time.Duration  { return t.timeout }
 
 func (t *metricTask) Run(ctx context.Context) error {
 	obs, err := collect.Execute(ctx, t.client, t.serverName, t.def, t.timeout)
+	if opEv := t.events.EvaluateCollectorResult(t.serverName, t.def.Name, err, time.Now()); opEv != nil {
+		printEvent(*opEv)
+	}
 	if err != nil {
 		return err
 	}
 	for _, o := range obs {
 		fmt.Printf("%-32s = %-16v %s\n", o.FullName(), o.Value, o.Timestamp.Format(time.RFC3339))
+		measurement := strings.TrimPrefix(o.Metric, t.def.Name+".")
+		if ev := t.events.EvaluateThreshold(t.serverName, t.def, measurement, o.Value, o.Timestamp); ev != nil {
+			printEvent(*ev)
+		}
 	}
 	return nil
+}
+
+func printEvent(ev event.Event) {
+	switch ev.Kind {
+	case event.KindRaised:
+		fmt.Printf("!!! EVENT  %-8s %-10s %s/%-24s value=%v threshold=%v %q\n",
+			ev.Severity, ev.Kind, ev.Server, ev.Metric, ev.Value, ev.Threshold, ev.Message)
+	case event.KindRecovered:
+		sev := ev.Severity
+		if sev == "" {
+			sev = "normal"
+		}
+		fmt.Printf("!!! EVENT  %-8s %-10s %s/%-24s value=%v %q\n",
+			sev, ev.Kind, ev.Server, ev.Metric, ev.Value, ev.Message)
+	}
 }

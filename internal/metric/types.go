@@ -62,16 +62,55 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
-// EventRule is a generic threshold rule attached to a measurement.
+// EventRule is a generic threshold rule attached to one measurement.
 // The event engine evaluates these without knowing what the metric means.
 type EventRule struct {
-	Name         string         `yaml:"name"`
-	Measurement  string         `yaml:"measurement,omitempty"` // which key in Definition.Metrics this applies to; defaults to the rule's own name prefix
-	Condition    EventCondition `yaml:"condition"`
-	Threshold    float64        `yaml:"threshold"`
-	Severity     Severity       `yaml:"severity"`
-	RecoverBelow *float64       `yaml:"recover_below,omitempty"`
-	RecoverAbove *float64       `yaml:"recover_above,omitempty"`
+	Name        string         `yaml:"name"`
+	Measurement string         `yaml:"measurement"` // which key in Definition.Metrics this applies to; required, no name-based guessing
+	Condition   EventCondition `yaml:"condition"`
+	Threshold   float64        `yaml:"threshold"`
+	Severity    Severity       `yaml:"severity"`
+
+	// RecoverBelow/RecoverAbove give the rule hysteresis: once breached, it
+	// stays active until the value crosses back past this point, not just
+	// past Threshold again. Only one is meaningful depending on Condition
+	// (RecoverBelow for "above" rules, RecoverAbove for "below" rules). If
+	// unset, recovery happens as soon as the value no longer breaches
+	// Threshold.
+	RecoverBelow *float64 `yaml:"recover_below,omitempty"`
+	RecoverAbove *float64 `yaml:"recover_above,omitempty"`
+}
+
+// Breached reports whether value currently breaches this rule.
+func (r EventRule) Breached(value float64) bool {
+	switch r.Condition {
+	case ConditionAbove:
+		return value > r.Threshold
+	case ConditionBelow:
+		return value < r.Threshold
+	default:
+		return false
+	}
+}
+
+// Recovered reports whether value has crossed back past this rule's
+// recovery point. With no explicit recover_below/recover_above, recovery
+// is the plain inverse of Breached (no hysteresis).
+func (r EventRule) Recovered(value float64) bool {
+	switch r.Condition {
+	case ConditionAbove:
+		if r.RecoverBelow != nil {
+			return value < *r.RecoverBelow
+		}
+		return value <= r.Threshold
+	case ConditionBelow:
+		if r.RecoverAbove != nil {
+			return value > *r.RecoverAbove
+		}
+		return value >= r.Threshold
+	default:
+		return true
+	}
 }
 
 // Definition is one metric YAML file: identity, collection, measurements and
@@ -133,9 +172,20 @@ func (d *Definition) Validate() error {
 			return fmt.Errorf("metric %q: measurement %q has invalid type %q", d.Name, key, m.Type)
 		}
 	}
+	seenEventNames := make(map[string]bool, len(d.Events))
 	for _, ev := range d.Events {
 		if ev.Name == "" {
 			return fmt.Errorf("metric %q: event rule missing name", d.Name)
+		}
+		if seenEventNames[ev.Name] {
+			return fmt.Errorf("metric %q: duplicate event rule name %q", d.Name, ev.Name)
+		}
+		seenEventNames[ev.Name] = true
+		if ev.Measurement == "" {
+			return fmt.Errorf("metric %q: event %q missing measurement", d.Name, ev.Name)
+		}
+		if _, ok := d.Metrics[ev.Measurement]; !ok {
+			return fmt.Errorf("metric %q: event %q references unknown measurement %q", d.Name, ev.Name, ev.Measurement)
 		}
 		if ev.Condition != ConditionAbove && ev.Condition != ConditionBelow {
 			return fmt.Errorf("metric %q: event %q has invalid condition %q", d.Name, ev.Name, ev.Condition)
