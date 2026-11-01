@@ -25,21 +25,46 @@ metrics:
   total:
     unit: bytes
     type: gauge
+    # No display block: this is the reference other measurements scale
+    # against (display.scale.max_ref below), not something to show its
+    # own bar for. Stays plain text.
   used:
     unit: bytes
     type: gauge
+    display:
+      widget: bar
+      scale:
+        max_ref: total
   free:
     unit: bytes
     type: gauge
+    display:
+      widget: bar
+      scale:
+        max_ref: total
   cache:
     unit: bytes
     type: gauge
+    display:
+      widget: bar
+      scale:
+        max_ref: total
   available:
     unit: bytes
     type: gauge
+    display:
+      widget: bar
+      scale:
+        max_ref: total
   used_percent:
     unit: percent
     type: gauge
+    display:
+      widget: gauge
+      primary: true
+      scale:
+        min: 0
+        max: 100
 events:
   - name: memory.available.warning
     measurement: available

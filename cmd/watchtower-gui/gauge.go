@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
 )
 
@@ -27,61 +28,58 @@ func statusColor(t *ui.Theme, status state.Status) ui.Color {
 	}
 }
 
-// clamp01 keeps a draw fraction within [0,1] so an out-of-range reading
-// never overflows or underflows a bar or gauge.
-func clamp01(f float32) float32 {
-	switch {
-	case f < 0:
-		return 0
-	case f > 1:
-		return 1
+// severityColor is statusColor's counterpart for metric.Severity (a Zone's
+// severity), which is a different type from a different package — not
+// worth a conversion just to share one three-case switch.
+func severityColor(t *ui.Theme, sev metric.Severity) ui.Color {
+	switch sev {
+	case metric.SeverityWarning:
+		return t.Warning
+	case metric.SeverityCritical:
+		return t.Danger
 	default:
-		return f
+		return t.Success
 	}
 }
 
-// barFraction maps a raw measurement to a 0-1 draw fraction, by unit.
-// Percent is the natural 0-100 scale. Load averages have no fixed max —
-// 4.0 is a reasonable "fully loaded" reference for a small box (and
-// happens to match this library's own cpu.load1.warning threshold); a
-// nicer version would size this per-server from core count, not hardcode
-// it here.
-func barFraction(unit string, value float64) float32 {
-	switch unit {
-	case "percent":
-		return clamp01(float32(value / 100))
-	case "load":
-		return clamp01(float32(value / 4))
-	default:
-		return 0
-	}
-}
-
-// barEntry is one already-resolved small bar: whatever scale its
-// measurement used (percent, load, or a share of some total), by the time
-// it's a barEntry it's just a fraction and a label.
+// barEntry is one already-resolved small bar: whatever its measurement's
+// own display config said, by the time it's a barEntry it's a value, a
+// scale and (maybe) zones to draw.
 type barEntry struct {
 	label string
-	frac  float32
+	value float64
+	scale state.Scale
+	zones []state.Zone
 	text  string
 }
 
-// bar draws a horizontal progress bar: a track in the theme's muted
-// border color, filled from the left by frac in color. Same geometry as
-// ui.Meter, just driven by our own status color instead of Meter's static
-// threshold levels.
-func bar(c *ui.Context, frac float32, color ui.Color, w, h float32) ui.Element {
+// bar draws a horizontal progress indicator.
+//
+// With zones (same source as pressureGauge's: state.ResolveZones from the
+// measurement's own event rules), the bar's face is the colored threshold
+// bands themselves, with a thin marker line at the current value — the
+// bar's equivalent of the gauge's dial-plus-marker, not a different idea.
+//
+// Without zones, it's the plain flat-track-plus-fill bar this always was.
+func bar(c *ui.Context, be barEntry, fallbackColor ui.Color, w, h float32) ui.Element {
 	t := c.Theme()
 	rad := h / 2
-	e := ui.Box(c).Width(w).Height(h).Radius(rad).Background(t.Border).Clip()
+	e := ui.Box(c).Width(w).Height(h).Radius(rad).Clip()
 	e.Draw(func(p *ui.Painter, r ui.Rect) {
-		p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W * frac, H: r.H}, color, rad)
+		if len(be.zones) > 0 {
+			for _, z := range be.zones {
+				from, to := be.scale.Fraction(z.From), be.scale.Fraction(z.To)
+				p.Fill(ui.Rect{X: r.X + r.W*from, Y: r.Y, W: r.W * (to - from), H: r.H}, severityColor(t, z.Severity), 0)
+			}
+			mx := r.X + r.W*be.scale.Fraction(be.value)
+			p.Fill(ui.Rect{X: mx - 1, Y: r.Y, W: 2, H: r.H}, t.Text, 0)
+		} else {
+			p.Fill(r, t.Border, 0)
+			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W * be.scale.Fraction(be.value), H: r.H}, fallbackColor, rad)
+		}
 	})
 	return e
 }
-
-// (circularGauge, the earlier full-ring design, was replaced by
-// pressureGauge below — a dial reads more like a gauge than a donut.)
 
 // Pressure-gauge sweep: starts bottom-left, goes clockwise over the top,
 // ends bottom-right — the classic speedometer shape, with a gap at the
@@ -92,28 +90,48 @@ const (
 	gaugeSweepDeg = 270.0
 )
 
-// pressureGauge draws a dial-style arc gauge: a full-sweep track in the
-// theme's muted border color, and a progress arc of frac's share of the
-// sweep in color, round-capped, with centerLabel (typically "42%") in the
-// middle. mygo's Path only offers a full circle as a primitive, so the arc
-// itself is hand-built from cubic Beziers (buildArc) rather than trimmed
-// from one.
-func pressureGauge(c *ui.Context, frac float32, color ui.Color, diameter float32, centerLabel string) ui.Element {
+// pressureGauge draws a dial-style arc gauge, round-capped, with
+// centerLabel (typically "42%") in the middle.
+//
+// With zones (resolved from the measurement's own event rules —
+// state.ResolveZones), the dial's face is the colored threshold bands
+// themselves, and a single marker dot shows where the current value sits
+// — a real instrument face, not just a progress bar bent into a circle.
+//
+// Without zones (a gauge-widget measurement with no alerting rules), it
+// falls back to a flat muted track with a progress arc filled in
+// fallbackColor — still a gauge, just one with nothing to show bands for.
+func pressureGauge(c *ui.Context, scale state.Scale, value float64, zones []state.Zone, fallbackColor ui.Color, diameter float32, centerLabel string) ui.Element {
 	t := c.Theme()
 	stroke := diameter * 0.15
+	frac := scale.Fraction(value)
+
 	e := ui.Box(c).Size(diameter, diameter).AlignItems(ui.Center).Justify(ui.Center)
 	e.Draw(func(p *ui.Painter, r ui.Rect) {
 		cx, cy := r.X+r.W/2, r.Y+r.H/2
 		radius := r.W/2 - stroke/2
 
-		track := buildArc(cx, cy, radius, gaugeStartDeg, gaugeSweepDeg)
-		track.Cap(ui.RoundCap)
-		p.StrokePath(track, stroke, t.Border)
-
-		if frac > 0 {
-			progress := buildArc(cx, cy, radius, gaugeStartDeg, gaugeSweepDeg*float64(frac))
-			progress.Cap(ui.RoundCap)
-			p.StrokePath(progress, stroke, color)
+		if len(zones) > 0 {
+			for _, z := range zones {
+				from, to := scale.Fraction(z.From), scale.Fraction(z.To)
+				band := buildArc(cx, cy, radius, gaugeStartDeg+gaugeSweepDeg*float64(from), gaugeSweepDeg*float64(to-from))
+				p.StrokePath(band, stroke, severityColor(t, z.Severity))
+			}
+			markerDeg := gaugeStartDeg + gaugeSweepDeg*float64(frac)
+			mx := cx + radius*float32(math.Cos(markerDeg*math.Pi/180))
+			my := cy + radius*float32(math.Sin(markerDeg*math.Pi/180))
+			marker := new(ui.Path)
+			marker.Circle(mx, my, stroke*0.5)
+			p.FillPath(marker, t.Text)
+		} else {
+			track := buildArc(cx, cy, radius, gaugeStartDeg, gaugeSweepDeg)
+			track.Cap(ui.RoundCap)
+			p.StrokePath(track, stroke, t.Border)
+			if frac > 0 {
+				progress := buildArc(cx, cy, radius, gaugeStartDeg, gaugeSweepDeg*float64(frac))
+				progress.Cap(ui.RoundCap)
+				p.StrokePath(progress, stroke, fallbackColor)
+			}
 		}
 	})
 	e.Children(func() {

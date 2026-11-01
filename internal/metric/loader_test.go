@@ -39,8 +39,8 @@ func TestLoadDefinitions_Valid(t *testing.T) {
 	if free.Unit != "bytes" || free.Type != TypeGauge {
 		t.Errorf("memory.free = %+v, want unit=bytes type=gauge", free)
 	}
-	if len(mem.Events) != 2 {
-		t.Errorf("memory events = %d, want 2", len(mem.Events))
+	if len(mem.Events) != 4 { // available + used_percent, each warning/critical
+		t.Errorf("memory events = %d, want 4", len(mem.Events))
 	}
 
 	cpu, ok := reg.Get("cpu")

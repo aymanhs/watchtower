@@ -14,7 +14,6 @@ import (
 	"aymanhs/watchtower/internal/collect"
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/metric"
-	"aymanhs/watchtower/internal/sshmgr"
 	"aymanhs/watchtower/internal/state"
 )
 
@@ -25,8 +24,8 @@ import (
 type MetricTask struct {
 	ServerName                string
 	Def                       *metric.Definition
-	Client                    *sshmgr.Client
-	CollectInterval, Deadline time.Duration // Deadline: per-execution timeout (named to avoid colliding with the Timeout() method below)
+	Client                    collect.Runner // typically *sshmgr.Client; an interface so this is testable without a real SSH connection
+	CollectInterval, Deadline time.Duration  // Deadline: per-execution timeout (named to avoid colliding with the Timeout() method below)
 	Events                    *event.Engine
 
 	// Store, if non-nil, receives this task's results for a GUI (or any
@@ -56,6 +55,14 @@ func (t *MetricTask) Run(ctx context.Context) error {
 		return err
 	}
 
+	// Raw values of every measurement this cycle, so a display.scale's
+	// max_ref can look up a sibling (e.g. "used" scaled against "total")
+	// regardless of which order observations happen to come in.
+	rawValues := make(map[string]float64, len(obs))
+	for _, o := range obs {
+		rawValues[strings.TrimPrefix(o.Metric, t.Def.Name+".")] = o.Value
+	}
+
 	measurementSeverity := make(map[string]metric.Severity, len(obs))
 	measurements := make([]state.MeasurementView, 0, len(obs))
 	for _, o := range obs {
@@ -67,17 +74,56 @@ func (t *MetricTask) Run(ctx context.Context) error {
 			printEvent(*ev)
 		}
 		measurementSeverity[measurement] = t.Events.CurrentSeverity(t.ServerName, t.Def.Name+"."+measurement)
-		unit := ""
-		if m, ok := t.Def.Metrics[measurement]; ok {
-			unit = m.Unit
+
+		mv := state.MeasurementView{Key: measurement, Value: o.Value}
+		def, ok := t.Def.Metrics[measurement]
+		if !ok {
+			measurements = append(measurements, mv) // shouldn't happen; collect.Execute already filters to known keys
+			continue
 		}
-		measurements = append(measurements, state.MeasurementView{Key: measurement, Value: o.Value, Unit: unit})
+		mv.Unit = def.Unit
+		if disp := def.Display; disp != nil {
+			mv.Widget = disp.Widget
+			mv.Primary = disp.Primary
+			scale, err := state.ResolveScale(disp.Scale, rawValues)
+			if err != nil {
+				// A bad max_ref this cycle (e.g. the sibling momentarily
+				// missing) degrades to plain text rather than failing the
+				// whole collection — one measurement's display problem
+				// must not look like a collector failure.
+				if t.Print {
+					fmt.Printf("[%s/%s] display: %v\n", t.ServerName, t.Def.Name, err)
+				}
+			} else {
+				mv.Scale = scale
+				// Both gauge and bar can show zone bands when the
+				// measurement has event rules to derive them from; a
+				// measurement with no rules just gets no Zones either way
+				// (ResolveZones returns nil), which both widgets already
+				// render as their plain unzoned fallback.
+				if scale != nil && (disp.Widget == metric.WidgetGauge || disp.Widget == metric.WidgetBar) {
+					mv.Zones = state.ResolveZones(rulesFor(t.Def, measurement), *scale)
+				}
+			}
+		}
+		measurements = append(measurements, mv)
 	}
 
 	if t.Store != nil {
 		t.Store.UpdateSuccess(t.ServerName, t.Def.Name, measurements, measurementSeverity, now)
 	}
 	return nil
+}
+
+// rulesFor returns def's event rules that target one measurement.
+func rulesFor(def *metric.Definition, measurement string) []metric.EventRule {
+	var out []metric.EventRule
+	for _, r := range def.Events {
+		if r.Measurement == measurement {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func printEvent(ev event.Event) {

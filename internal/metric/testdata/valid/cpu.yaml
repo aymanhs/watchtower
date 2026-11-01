@@ -1,5 +1,5 @@
 name: cpu
-description: Load averages
+description: Load averages and utilization
 groups:
   - basic
   - linux
@@ -7,24 +7,69 @@ tags:
   - system
   - resource
 interval: 5s
-timeout: 3s
+timeout: 4s
 collector:
   type: shell
   command: |
     awk '{print "load1=" $1; print "load5=" $2; print "load15=" $3}' /proc/loadavg
+    # vmstat's first sample is since boot; the second, a second later, is
+    # the real instantaneous reading — this needs no cross-cycle state.
+    vmstat 1 2 | tail -1 | awk '{print "usage=" 100-$15}'
+    echo "cores=$(nproc)"
 metrics:
+  cores:
+    unit: count
+    type: gauge
+    # No display block: this exists only so load1/5/15 can scale against
+    # the server's actual core count via display.scale.max_ref, same
+    # mechanism memory.yaml uses for "total". Stays plain text.
   load1:
     unit: load
     type: gauge
+    display:
+      widget: bar
+      scale:
+        min: 0
+        max_ref: cores
   load5:
     unit: load
     type: gauge
+    display:
+      widget: bar
+      scale:
+        min: 0
+        max_ref: cores
   load15:
     unit: load
     type: gauge
+    display:
+      widget: bar
+      scale:
+        min: 0
+        max_ref: cores
+  usage:
+    unit: percent
+    type: gauge
+    display:
+      widget: gauge
+      primary: true
+      scale:
+        min: 0
+        max: 100
 events:
   - name: cpu.load1.warning
     measurement: load1
     condition: above
     threshold: 4
     severity: warning
+  - name: cpu.usage.warning
+    measurement: usage
+    condition: above
+    threshold: 80
+    severity: warning
+  - name: cpu.usage.critical
+    measurement: usage
+    condition: above
+    threshold: 90
+    severity: critical
+    recover_below: 85

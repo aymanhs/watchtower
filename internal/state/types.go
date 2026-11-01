@@ -6,7 +6,11 @@
 // collection engine.
 package state
 
-import "time"
+import (
+	"time"
+
+	"aymanhs/watchtower/internal/metric"
+)
 
 // Status is the four-color state the brief calls for: green, amber, red,
 // grey. It generalizes metric.Severity with an explicit "unreachable/stale"
@@ -43,11 +47,51 @@ func worst(a, b Status) Status {
 	return a
 }
 
-// MeasurementView is one named value within a metric, as last observed.
+// Scale is a resolved 0%-100% reference for a Bar or Gauge widget — by the
+// time it reaches a MeasurementView, metric.Scale's Min/Max/MaxRef has
+// already been resolved to concrete numbers (see ResolveScale).
+type Scale struct {
+	Min, Max float64
+}
+
+// Fraction maps value onto this scale, clamped to [0,1] so an
+// out-of-range reading never overflows or underflows a bar or gauge.
+func (s Scale) Fraction(value float64) float32 {
+	if s.Max == s.Min {
+		return 0
+	}
+	f := float32((value - s.Min) / (s.Max - s.Min))
+	switch {
+	case f < 0:
+		return 0
+	case f > 1:
+		return 1
+	default:
+		return f
+	}
+}
+
+// Zone is one colored band on a Gauge's dial, in the measurement's own
+// value units (not a 0-1 fraction — the GUI maps it through Scale when
+// drawing). Severity "" means the normal/success band.
+type Zone struct {
+	From, To float64
+	Severity metric.Severity
+}
+
+// MeasurementView is one named value within a metric, as last observed,
+// plus its GUI presentation — resolved once per collection cycle from the
+// metric definition's Display block (see internal/app), not decided by
+// the GUI from the measurement's name or unit.
 type MeasurementView struct {
 	Key   string // e.g. "available", "used"
 	Value float64
 	Unit  string
+
+	Widget  metric.Widget
+	Primary bool
+	Scale   *Scale // nil unless Widget needs one and it resolved successfully
+	Zones   []Zone // only ever set for a Gauge; nil if the measurement has no event rules to derive bands from
 }
 
 // MetricView is one metric definition's current state on one server: its

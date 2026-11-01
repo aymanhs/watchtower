@@ -44,6 +44,10 @@ type Measurement struct {
 	Unit      string `yaml:"unit"`
 	Type      Type   `yaml:"type"`
 	Precision int    `yaml:"precision,omitempty"`
+
+	// Display is this measurement's GUI presentation hint. Nil (no
+	// "display:" block in YAML) means plain text, no code change needed.
+	Display *Display `yaml:"display,omitempty"`
 }
 
 // EventCondition is the comparison a threshold rule evaluates.
@@ -164,6 +168,7 @@ func (d *Definition) Validate() error {
 	if len(d.Metrics) == 0 {
 		return fmt.Errorf("metric %q: must define at least one measurement", d.Name)
 	}
+	primaryCount := 0
 	for key, m := range d.Metrics {
 		if m.Unit == "" {
 			return fmt.Errorf("metric %q: measurement %q missing unit", d.Name, key)
@@ -171,6 +176,15 @@ func (d *Definition) Validate() error {
 		if !m.Type.valid() {
 			return fmt.Errorf("metric %q: measurement %q has invalid type %q", d.Name, key, m.Type)
 		}
+		if err := d.validateDisplay(key, m); err != nil {
+			return err
+		}
+		if m.Display != nil && m.Display.Primary {
+			primaryCount++
+		}
+	}
+	if primaryCount > 1 {
+		return fmt.Errorf("metric %q: more than one measurement marked display.primary", d.Name)
 	}
 	seenEventNames := make(map[string]bool, len(d.Events))
 	for _, ev := range d.Events {
