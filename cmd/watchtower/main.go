@@ -7,7 +7,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"aymanhs/watchtower/internal/collect"
+	"aymanhs/watchtower/internal/group"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/server"
@@ -29,6 +32,22 @@ const maxConcurrentCollections = 16
 // It is independent of any metric's own collection timeout, so a slow
 // first handshake never eats into a metric's execution budget.
 const connectWarmupTimeout = 10 * time.Second
+
+// loadGroupRegistry loads group-level metric overrides from dir. A missing
+// groups directory is not an error — groups are optional; a server can
+// list a group that carries no file and simply gets no group-level
+// overrides for it.
+func loadGroupRegistry(dir string) (*group.Registry, error) {
+	configs, err := group.LoadGroups(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			log.Printf("no %s directory found, no group-level overrides", dir)
+			return group.NewRegistry(nil)
+		}
+		return nil, err
+	}
+	return group.NewRegistry(configs)
+}
 
 // connectAll dials every server concurrently before scheduling starts. A
 // server that's slow or unreachable is logged and left to the normal
@@ -73,6 +92,11 @@ func main() {
 	}
 	log.Printf("loaded %d server configs", len(servers))
 
+	groupReg, err := loadGroupRegistry("groups")
+	if err != nil {
+		log.Fatalf("load group configs: %v", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
@@ -99,7 +123,7 @@ func main() {
 		}
 		client := clients[cfg.Name]
 		for _, def := range resolved {
-			interval, timeout := effective(cfg, def)
+			interval, timeout := effective(groupReg, cfg, def)
 			log.Printf("server %s: scheduling %s every %s (timeout %s)", cfg.Name, def.Name, interval, timeout)
 			tasks = append(tasks, &metricTask{
 				serverName: cfg.Name,
@@ -118,19 +142,15 @@ func main() {
 	log.Println("all collectors stopped")
 }
 
-// effective applies a server's per-metric override, if any, on top of the
-// metric definition's defaults.
-func effective(cfg *server.Config, def *metric.Definition) (interval, timeout time.Duration) {
-	interval = def.Interval.Duration
-	timeout = def.Timeout.Duration
-	if override, ok := cfg.Metrics[def.Name]; ok {
-		if override.Interval != nil {
-			interval = override.Interval.Duration
-		}
-		if override.Timeout != nil {
-			timeout = override.Timeout.Duration
-		}
+// effective resolves def's interval and timeout for cfg, applying the full
+// precedence chain: definition defaults, then cfg's groups' overrides in
+// the order cfg lists them, then cfg's own server-specific override last.
+func effective(groupReg *group.Registry, cfg *server.Config, def *metric.Definition) (interval, timeout time.Duration) {
+	overrides := groupReg.Overrides(cfg.Groups, def.Name)
+	if serverOverride, ok := cfg.Metrics[def.Name]; ok {
+		overrides = append(overrides, serverOverride)
 	}
+	interval, timeout, _ = def.Resolve(overrides...)
 	return interval, timeout
 }
 

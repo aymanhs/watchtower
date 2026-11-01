@@ -1,0 +1,3 @@
+metrics:
+  memory:
+    interval: 10s

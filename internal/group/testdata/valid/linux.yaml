@@ -1,0 +1,6 @@
+name: linux
+metrics:
+  memory:
+    interval: 20s
+  cpu:
+    timeout: 2s

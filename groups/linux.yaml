@@ -1,0 +1,8 @@
+name: linux
+
+# Example group-level override: anything in the "linux" group collects cpu
+# every 15s instead of the definition's default 5s, unless a server's own
+# metrics override says otherwise (server overrides always win).
+metrics:
+  cpu:
+    interval: 15s

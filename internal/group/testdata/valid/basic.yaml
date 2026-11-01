@@ -1,0 +1,4 @@
+name: basic
+metrics:
+  memory:
+    interval: 15s

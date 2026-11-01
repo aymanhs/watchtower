@@ -1,6 +1,13 @@
 // Package server defines per-server configuration: how to connect, which
 // metric groups are enabled, and any server-specific overrides.
 //
+// Config precedence is: metric definition defaults, then group-level
+// config (internal/group) in the order Groups lists them — a later group
+// in the list wins over an earlier one on conflicting settings, which is
+// deterministic and independent of how group YAML files happen to load
+// from disk — then this server's own Metrics override last, which always
+// wins over anything a group configured.
+//
 // This package does not open connections or run collectors; it only parses
 // and validates configuration.
 package server
@@ -30,17 +37,15 @@ type Connection struct {
 	Key  string         `yaml:"key"`
 }
 
-// MetricOverride lets one server tweak a metric definition's collection
-// behavior without modifying the shared YAML definition. Nil fields mean
-// "use the definition's default".
-type MetricOverride struct {
-	Interval *metric.Duration `yaml:"interval,omitempty"`
-	Timeout  *metric.Duration `yaml:"timeout,omitempty"`
-	Config   map[string]any   `yaml:"config,omitempty"`
-}
+// MetricOverride is a server-specific metric override. It's the same shape
+// used by groups (metric.Override); the alias exists so server-specific
+// call sites can name it without importing metric directly for the type.
+type MetricOverride = metric.Override
 
 // Config is one server's configuration: how to reach it, which metric
-// groups it collects, and any per-metric overrides.
+// groups it collects (in the order given — see the package doc on group
+// precedence), and any per-metric overrides, which always win over
+// whatever the server's groups configured.
 type Config struct {
 	Name       string                    `yaml:"name"`
 	Connection Connection                `yaml:"connection"`
