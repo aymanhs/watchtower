@@ -63,6 +63,14 @@ type Collector struct {
 	// match what you'd want to call the measurement — so Fields is only
 	// needed to rename or reach into a nested one.
 	Fields map[string]string `yaml:"fields,omitempty"`
+
+	// Config is this collector's own default parameters — e.g. disk's
+	// path: "/" — seeded into Definition.Resolve's config before any
+	// group/server override applies. Lets a definition ship something
+	// sensible so a server only needs to supply config at all when it
+	// wants something different, exactly like a NATS server's endpoint
+	// still must (no sensible universal default exists for that one).
+	Config map[string]any `yaml:"config,omitempty"`
 }
 
 // Measurement describes one named value returned by a single collector execution.

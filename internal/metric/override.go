@@ -20,7 +20,15 @@ type Override struct {
 func (d *Definition) Resolve(overrides ...Override) (interval, timeout time.Duration, config map[string]any) {
 	interval = d.Interval.Duration
 	timeout = d.Timeout.Duration
-	config = make(map[string]any)
+	config = make(map[string]any, len(d.Collector.Config))
+	// Seed from the collector's own defaults (e.g. disk's path: "/") before
+	// any override — a definition can ship something sensible so a server
+	// only needs to supply config at all when it wants something different,
+	// the same precedence chain as interval/timeout, just with one more
+	// rung underneath.
+	for k, v := range d.Collector.Config {
+		config[k] = v
+	}
 	for _, o := range overrides {
 		if o.Interval != nil {
 			interval = o.Interval.Duration

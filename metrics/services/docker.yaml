@@ -1,0 +1,54 @@
+name: docker
+description: Docker daemon container/image counts
+groups:
+  - docker
+tags:
+  - services
+  - docker
+  - docker
+interval: 30s
+timeout: 5s
+collector:
+  type: shell
+  # Plain "docker info" text output, parsed the same way every other
+  # metric here parses plain CLI output (free, df, vmstat) — not
+  # --format='{{...}}', which would collide with this engine's own
+  # command templating (both use Go's {{ }} delimiters) for no real
+  # benefit here. "|| exit 1" matters: without it, a daemon-unreachable
+  # failure would be masked exactly like the curl-without-exit-check bug
+  # this project already found and fixed once for NATS.
+  command: |
+    docker info >/dev/null 2>&1 || exit 1
+    docker info 2>/dev/null | awk -F': ' '
+      /^ Containers:/ { print "containers_total=" $2 }
+      /^  Running:/ { print "containers_running=" $2 }
+      /^  Paused:/ { print "containers_paused=" $2 }
+      /^  Stopped:/ { print "containers_stopped=" $2 }
+      /^ Images:/ { print "images=" $2 }
+    '
+metrics:
+  containers_total:
+    unit: count
+    type: gauge
+    display:
+      label: Total
+  containers_running:
+    unit: count
+    type: gauge
+    display:
+      label: Running
+  containers_paused:
+    unit: count
+    type: gauge
+    display:
+      label: Paused
+  containers_stopped:
+    unit: count
+    type: gauge
+    display:
+      label: Stopped
+  images:
+    unit: count
+    type: gauge
+    display:
+      label: Images

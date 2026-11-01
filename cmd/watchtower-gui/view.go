@@ -220,6 +220,7 @@ func metricLine(c *ui.Context, t *ui.Theme, mv state.MetricView) {
 
 		var primary *state.MeasurementView
 		var bars []barEntry
+		var dots []state.MeasurementView
 		var plain []state.MeasurementView
 		for i := range mv.Measurements {
 			m := mv.Measurements[i]
@@ -228,11 +229,13 @@ func metricLine(c *ui.Context, t *ui.Theme, mv state.MetricView) {
 				primary = &m
 			case m.Widget == metric.WidgetBar && m.Scale != nil:
 				bars = append(bars, barEntry{m.DisplayLabel(), m.Value, *m.Scale, m.Zones, formatValue(m.Unit, m.Value)})
+			case m.Widget == metric.WidgetDot:
+				dots = append(dots, m)
 			default:
-				// Includes WidgetDot (not yet rendered inline here — a
-				// metric line already has its own status dot) and any
-				// bar/gauge whose Scale failed to resolve this cycle
-				// (internal/app degrades those to plain text on purpose).
+				// Any bar/gauge whose Scale failed to resolve this cycle
+				// also lands here (internal/app degrades those to plain
+				// text on purpose), alongside anything with no display
+				// block at all.
 				plain = append(plain, m)
 			}
 		}
@@ -248,6 +251,22 @@ func metricLine(c *ui.Context, t *ui.Theme, mv state.MetricView) {
 						ui.Text(c, be.label).FontSize(11).Width(40).TextColor(t.TextMuted)
 						bar(c, be, color, 90, 6)
 						ui.Text(c, be.text).FontSize(11)
+					})
+				}
+			})
+		}
+
+		if len(dots) > 0 {
+			ui.Row(c).Gap(10).Children(func() {
+				for _, m := range dots {
+					// A dot measurement is a state, not a value — "active"
+					// reads better as a colored dot + its label than as
+					// "active=1". Uses the metric's own (possibly stale,
+					// possibly aggregate-across-measurements) color, same
+					// as every other widget on this line.
+					ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+						statusDot(c, mv.Status, 8, m.DisplayLabel())
+						ui.Text(c, m.DisplayLabel()).FontSize(11).TextColor(t.TextMuted)
 					})
 				}
 			})

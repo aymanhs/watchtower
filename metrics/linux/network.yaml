@@ -1,0 +1,82 @@
+name: network
+description: Traffic and errors on the default network interface
+groups:
+  - basic
+  - linux
+tags:
+  - system
+  - resource
+  - network
+interval: 15s
+timeout: 5s
+collector:
+  type: shell
+  # iface defaults to "" (below), meaning "auto-detect via the default
+  # route" — deliberately not a literal interface name: those vary too
+  # much across hosts (eth0, ens5, enp0s3, ...) to be a sane default.
+  # Override per-server to pin a specific interface instead:
+  #   metrics:
+  #     network:
+  #       config:
+  #         iface: eth1
+  config:
+    iface: ""
+  command: |
+    iface="{{.iface}}"
+    if [ -z "$iface" ]; then
+      iface=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}' | head -1)
+    fi
+    awk -v iface="$iface:" '
+      $1 == iface {
+        print "rx_bytes=" $2
+        print "rx_packets=" $3
+        print "rx_errors=" $4
+        print "tx_bytes=" $10
+        print "tx_packets=" $11
+        print "tx_errors=" $12
+      }' /proc/net/dev
+metrics:
+  rx_bytes:
+    unit: bytes
+    type: counter
+    display:
+      label: In
+  rx_packets:
+    unit: count
+    type: counter
+  rx_errors:
+    unit: count
+    type: gauge
+    display:
+      label: Rx Errors
+  tx_bytes:
+    unit: bytes
+    type: counter
+    display:
+      label: Out
+  tx_packets:
+    unit: count
+    type: counter
+  tx_errors:
+    unit: count
+    type: gauge
+    display:
+      label: Tx Errors
+# rx_errors/tx_errors are cumulative counters (since boot), not a
+# per-interval rate — the engine has no counter-delta/rate computation
+# yet, so "above 0" means "has ever had an error", not "is having errors
+# now". It will warn once and then never recover (a monotonic counter
+# never goes back below a threshold it already crossed). Honest trade-off
+# until rate support exists, not a bug: still useful as "this interface
+# has had a problem, go look," just not as a live up/down signal.
+events:
+  - name: network.rx_errors.warning
+    measurement: rx_errors
+    condition: above
+    threshold: 0
+    severity: warning
+  - name: network.tx_errors.warning
+    measurement: tx_errors
+    condition: above
+    threshold: 0
+    severity: warning

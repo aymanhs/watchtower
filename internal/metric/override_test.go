@@ -58,3 +58,26 @@ func TestDefinition_Resolve(t *testing.T) {
 		}
 	})
 }
+
+func TestDefinition_Resolve_SeedsFromCollectorDefaultConfig(t *testing.T) {
+	def := &Definition{
+		Name:      "disk",
+		Interval:  Duration{10 * time.Second},
+		Timeout:   Duration{5 * time.Second},
+		Collector: Collector{Config: map[string]any{"path": "/"}},
+	}
+
+	t.Run("no override keeps the collector's own default", func(t *testing.T) {
+		_, _, cfg := def.Resolve()
+		if cfg["path"] != "/" {
+			t.Fatalf("config[path] = %v, want \"/\" (the collector's default)", cfg["path"])
+		}
+	})
+
+	t.Run("a server override still wins over the collector's default", func(t *testing.T) {
+		_, _, cfg := def.Resolve(Override{Config: map[string]any{"path": "/data"}})
+		if cfg["path"] != "/data" {
+			t.Fatalf("config[path] = %v, want \"/data\" (server override beats collector default)", cfg["path"])
+		}
+	})
+}

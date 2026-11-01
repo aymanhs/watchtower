@@ -1,0 +1,51 @@
+name: systemd
+description: Whether one systemd unit is active and enabled
+groups:
+  - systemd
+tags:
+  - services
+  - systemd
+interval: 30s
+timeout: 5s
+collector:
+  type: shell
+  # No default: unlike disk's path or network's iface, there's no sane
+  # universal unit name — every server must say which one it means.
+  #   metrics:
+  #     systemd:
+  #       config:
+  #         unit: nginx
+  # A unit that doesn't exist reports active=0, same as a stopped one —
+  # systemctl is-active/is-enabled exit non-zero for "doesn't exist" too,
+  # so that's treated as a state, not a collection failure.
+  command: |
+    unit="{{.unit}}"
+    state=$(systemctl is-active "$unit" 2>/dev/null || true)
+    case "$state" in
+      active) echo "active=1" ;;
+      *) echo "active=0" ;;
+    esac
+    enabled=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+    case "$enabled" in
+      enabled) echo "enabled=1" ;;
+      *) echo "enabled=0" ;;
+    esac
+metrics:
+  active:
+    unit: bool
+    type: gauge
+    display:
+      widget: dot
+      label: Active
+  enabled:
+    unit: bool
+    type: gauge
+    display:
+      widget: dot
+      label: Enabled
+events:
+  - name: systemd.active.critical
+    measurement: active
+    condition: below
+    threshold: 1
+    severity: critical

@@ -1,0 +1,72 @@
+name: disk
+description: Filesystem usage for one mount point
+groups:
+  - basic
+  - linux
+tags:
+  - system
+  - resource
+interval: 60s
+timeout: 5s
+collector:
+  type: shell
+  # path defaults to "/" (below); override per-server via
+  #   metrics:
+  #     disk:
+  #       config:
+  #         path: /data
+  # to watch a different mount point. One definition, one mount point —
+  # watching several on the same server means adding another metric
+  # definition (see disk.yaml's own groups/name) pointed at a different
+  # path, not a single instance that discovers every mount automatically.
+  config:
+    path: /
+  command: |
+    df -B1 {{.path}} | awk 'NR==2 {
+      print "total=" $2
+      print "used=" $3
+      print "free=" $4
+      print "used_percent=" ($3/$2*100)
+    }'
+metrics:
+  total:
+    unit: bytes
+    type: gauge
+  used:
+    unit: bytes
+    type: gauge
+    display:
+      widget: bar
+      label: Used
+      scale:
+        max_ref: total
+  free:
+    unit: bytes
+    type: gauge
+    display:
+      widget: bar
+      label: Free
+      scale:
+        max_ref: total
+  used_percent:
+    unit: percent
+    type: gauge
+    display:
+      widget: gauge
+      primary: true
+      label: Used %
+      scale:
+        min: 0
+        max: 100
+events:
+  - name: disk.used_percent.warning
+    measurement: used_percent
+    condition: above
+    threshold: 80
+    severity: warning
+  - name: disk.used_percent.critical
+    measurement: used_percent
+    condition: above
+    threshold: 90
+    severity: critical
+    recover_below: 85
