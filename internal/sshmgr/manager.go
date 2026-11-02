@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -145,6 +146,71 @@ func (c *Client) DialContext(ctx context.Context, network, address string) (net.
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// OpenShell starts an interactive login shell on a new session/channel —
+// a genuine remote terminal, not a one-shot command like Run. The
+// returned shellConn is an io.ReadWriteCloser (what you write goes to the
+// shell's stdin, what you read is its stdout+stderr) that also has a
+// Resize(cols, rows int) error method; a terminal view that type-asserts
+// for it (as github.com/egoist/mygo/plugins/terminal's Conn option does)
+// can keep the remote PTY's size matching the window's as it changes.
+func (c *Client) OpenShell(cols, rows int) (*shellConn, error) {
+	c.mu.Lock()
+	if err := c.ensureConnectedLocked(); err != nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	conn := c.conn
+	c.mu.Unlock()
+
+	session, err := conn.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("open session: %w", err)
+	}
+
+	modes := ssh.TerminalModes{ssh.ECHO: 1}
+	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
+		session.Close()
+		return nil, fmt.Errorf("request pty: %w", err)
+	}
+
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		session.Close()
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		session.Close()
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := session.Shell(); err != nil {
+		session.Close()
+		return nil, fmt.Errorf("start shell: %w", err)
+	}
+
+	return &shellConn{session: session, stdin: stdin, stdout: stdout}, nil
+}
+
+// shellConn adapts an *ssh.Session running an interactive shell to
+// io.ReadWriteCloser plus the Resize method a terminal view looks for.
+type shellConn struct {
+	session *ssh.Session
+	stdin   io.WriteCloser
+	stdout  io.Reader
+}
+
+func (s *shellConn) Read(p []byte) (int, error)  { return s.stdout.Read(p) }
+func (s *shellConn) Write(p []byte) (int, error) { return s.stdin.Write(p) }
+func (s *shellConn) Close() error                { return s.session.Close() }
+
+// Resize tells the remote PTY its new size. cols-then-rows matches what
+// github.com/egoist/mygo/plugins/terminal's Options.Conn doc specifies;
+// ssh.Session.WindowChange takes height then width, the other order.
+func (s *shellConn) Resize(cols, rows int) error {
+	return s.session.WindowChange(rows, cols)
 }
 
 // ensureConnectedLocked dials (or redials) the SSH connection if needed.

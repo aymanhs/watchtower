@@ -1,5 +1,5 @@
 name: disk
-description: Filesystem usage for one mount point
+description: Filesystem usage, per real mounted volume
 groups:
   - basic
   - linux
@@ -10,24 +10,36 @@ interval: 60s
 timeout: 5s
 collector:
   type: shell
-  # path defaults to "/" (below); override per-server via
-  #   metrics:
-  #     disk:
-  #       config:
-  #         path: /data
-  # to watch a different mount point. One definition, one mount point —
-  # watching several on the same server means adding another metric
-  # definition (see disk.yaml's own groups/name) pointed at a different
-  # path, not a single instance that discovers every mount automatically.
-  config:
-    path: /
+  # No config: every real mounted filesystem is discovered each cycle —
+  # no per-server path to set. Each measurement key is instance-prefixed
+  # with its mount point, sanitized so "/" (which internal/storage and
+  # this engine's own "server/metric.measurement" naming both use as a
+  # separator) can't collide with it: "/" -> "root", "/data" -> "data",
+  # "/var/log" -> "var_log" (leading slash stripped, the rest "_"-joined).
+  # One declared "total"/"used"/"free"/"used_percent" below applies to
+  # however many volumes a host actually has — see
+  # metric.Definition.ResolveMeasurement for how a measurement like
+  # "root_used" resolves against the single declared "used".
   command: |
-    df -B1 {{.path}} | awk 'NR==2 {
-      print "total=" $2
-      print "used=" $3
-      print "free=" $4
-      print "used_percent=" ($3/$2*100)
-    }'
+    df -B1 --output=target,size,used,avail,fstype >/dev/null 2>&1 || exit 1
+    df -B1 --output=target,size,used,avail,fstype 2>/dev/null | awk '
+      NR == 1 { next }
+      $5 ~ /^(tmpfs|devtmpfs|efivarfs|proc|sysfs|cgroup|cgroup2|overlay|squashfs|debugfs|tracefs|mqueue|hugetlbfs|rpc_pipefs|binfmt_misc|autofs|devpts|pstore|securityfs|configfs|fusectl|bpf)$/ { next }
+      {
+        mount = $1
+        if (mount == "/") {
+          name = "root"
+        } else {
+          name = mount
+          sub(/^\//, "", name)
+          gsub(/\//, "_", name)
+        }
+        size = $2; used = $3; avail = $4
+        print name "_total=" size
+        print name "_used=" used
+        print name "_free=" avail
+        if (size > 0) print name "_used_percent=" (used / size * 100)
+      }'
 metrics:
   total:
     unit: bytes
@@ -52,8 +64,10 @@ metrics:
     unit: percent
     type: gauge
     display:
-      widget: gauge
-      primary: true
+      # Plain bar, not the single headline gauge disk.yaml used to have:
+      # there's no one "primary" volume once a host can have several —
+      # every volume gets the same even treatment.
+      widget: bar
       label: Used %
       scale:
         min: 0

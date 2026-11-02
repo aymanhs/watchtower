@@ -1,0 +1,290 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"aymanhs/watchtower/internal/dashboard"
+	"aymanhs/watchtower/internal/server"
+	"aymanhs/watchtower/internal/state"
+)
+
+func TestFindMeasurement(t *testing.T) {
+	sv := state.ServerView{
+		Name: "jumpbox",
+		Metrics: []state.MetricView{
+			{Name: "cpu", Status: state.StatusWarning, Measurements: []state.MeasurementView{
+				{Key: "load1", Value: 1.5},
+				{Key: "usage", Value: 42},
+			}},
+		},
+	}
+
+	mv, status, found := findMeasurement(sv, "cpu", "load1")
+	if !found || mv.Value != 1.5 {
+		t.Fatalf("got mv=%+v found=%v, want load1=1.5 found", mv, found)
+	}
+	if status != state.StatusWarning {
+		t.Errorf("got status %v, want the metric's own status %v", status, state.StatusWarning)
+	}
+
+	if _, _, found := findMeasurement(sv, "cpu", "nonexistent"); found {
+		t.Error("found a measurement that was never there")
+	}
+	if _, _, found := findMeasurement(sv, "nonexistent", "load1"); found {
+		t.Error("found a measurement under a metric that was never there")
+	}
+}
+
+func TestAvailableSeries(t *testing.T) {
+	sv := state.ServerView{
+		Metrics: []state.MetricView{
+			{Name: "cpu", Measurements: []state.MeasurementView{{Key: "usage"}, {Key: "load1"}}},
+			{Name: "memory", Measurements: []state.MeasurementView{{Key: "used"}}},
+		},
+	}
+	got := availableSeries(sv)
+	want := []string{"cpu.load1", "cpu.usage", "memory.used"} // sorted
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSeriesRefFromPick(t *testing.T) {
+	ref := seriesRefFromPick("cpu.load1")
+	if ref.Metric != "cpu" || ref.Measurement != "load1" {
+		t.Errorf("got %+v, want {cpu load1}", ref)
+	}
+}
+
+func TestWidgetTitle(t *testing.T) {
+	cases := []struct {
+		w    dashboard.Widget
+		want string
+	}{
+		{dashboard.Widget{Title: "My Title", Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage"}}}, "My Title"},
+		{dashboard.Widget{Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage", Label: "CPU %"}}}, "CPU %"},
+		{dashboard.Widget{Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage"}}}, "cpu.usage"},
+		{dashboard.Widget{Type: dashboard.WidgetChart, Series: []dashboard.SeriesRef{
+			{Metric: "cpu", Measurement: "load1"}, {Metric: "cpu", Measurement: "load5"},
+		}}, "chart"},
+	}
+	for _, tc := range cases {
+		if got := widgetTitle(tc.w); got != tc.want {
+			t.Errorf("widgetTitle(%+v) = %q, want %q", tc.w, got, tc.want)
+		}
+	}
+}
+
+func TestApplyFormat(t *testing.T) {
+	cases := []struct {
+		format string
+		value  float64
+		want   string
+	}{
+		{"%.0f", 23.6, "24"},
+		{"%5.2fGb", 23.6, "23.60Gb"},
+		{"%6.2f%%", 92.346, " 92.35%"},
+		{"%d", 9.0, "9"},             // integer verb: must not print float64's "%!d(float64=9)"
+		{"%d items", 9.7, "9 items"}, // rounds toward zero via int64(), not nearest
+		{"%x", 255.0, "ff"},
+	}
+	for _, tc := range cases {
+		if got := applyFormat(tc.format, tc.value); got != tc.want {
+			t.Errorf("applyFormat(%q, %v) = %q, want %q", tc.format, tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestSeriesValue_FormatOverridesDefault(t *testing.T) {
+	mv := state.MeasurementView{Unit: "bytes", Value: 23.6 * (1 << 30)}
+	ref := dashboard.SeriesRef{Format: "%.1f GiB custom"}
+	// A bogus "value in raw bytes, printed as GiB with %.1f" format
+	// wouldn't make sense without dividing first — this just proves
+	// ref.Format wins over the unit-driven default, not that the division
+	// happened (the format string is the caller's own responsibility).
+	if got := seriesValue(ref, mv); got == formatValue(mv.Unit, mv.Format, mv.Value) {
+		t.Errorf("seriesValue with an explicit Format fell back to the default formatter: %q", got)
+	}
+
+	noFormat := dashboard.SeriesRef{}
+	if got, want := seriesValue(noFormat, mv), formatValue(mv.Unit, mv.Format, mv.Value); got != want {
+		t.Errorf("seriesValue with no Format = %q, want the default formatter's %q", got, want)
+	}
+}
+
+func TestTileSize(t *testing.T) {
+	w1, h1 := tileSize(1)
+	if w1 != tileWidth || h1 != tileHeight {
+		t.Errorf("tileSize(1) = (%v, %v), want (%v, %v)", w1, h1, tileWidth, tileHeight)
+	}
+	w2, h2 := tileSize(2)
+	wantW2 := tileWidth*2 + gridGap
+	wantH2 := tileHeight*2 + gridGap
+	if w2 != wantW2 || h2 != wantH2 {
+		t.Errorf("tileSize(2) = (%v, %v), want (%v, %v) (2 cells + the gap between them)", w2, h2, wantW2, wantH2)
+	}
+}
+
+// TestOpenWidgetEditor_PrefillsDraft checks both shapes: a single-series
+// widget (gauge/number) populates addWidgetSinglePick/addWidgetFormat, a
+// multi-series one (chart/pie) populates addWidgetSeriesPicks instead.
+func TestOpenWidgetEditor_PrefillsDraft(t *testing.T) {
+	gauge := dashboard.Widget{
+		Type: dashboard.WidgetGauge, Title: "Mem", Span: 2,
+		Series: []dashboard.SeriesRef{{Metric: "memory", Measurement: "free", Format: "%.1f GiB"}},
+	}
+	openWidgetEditor(3, gauge)
+	if editWidgetIdx != 3 {
+		t.Errorf("editWidgetIdx = %d, want 3", editWidgetIdx)
+	}
+	if addWidgetType != dashboard.WidgetGauge || addWidgetTitle != "Mem" || addWidgetSpan != 2 {
+		t.Errorf("draft = type:%v title:%q span:%d, want gauge/Mem/2", addWidgetType, addWidgetTitle, addWidgetSpan)
+	}
+	if addWidgetSinglePick != "memory.free" || addWidgetFormat != "%.1f GiB" {
+		t.Errorf("single-series draft = pick:%q format:%q, want memory.free / %%.1f GiB", addWidgetSinglePick, addWidgetFormat)
+	}
+
+	chart := dashboard.Widget{
+		Type: dashboard.WidgetChart,
+		Series: []dashboard.SeriesRef{
+			{Metric: "cpu", Measurement: "load1"},
+			{Metric: "cpu", Measurement: "load5"},
+		},
+	}
+	openWidgetEditor(0, chart)
+	if len(addWidgetSeriesPicks) != 2 || addWidgetSeriesPicks[0] != "cpu.load1" || addWidgetSeriesPicks[1] != "cpu.load5" {
+		t.Errorf("multi-series draft = %v, want [cpu.load1 cpu.load5]", addWidgetSeriesPicks)
+	}
+	if addWidgetSinglePick != "" {
+		t.Errorf("multi-series edit left a stale single-series pick: %q", addWidgetSinglePick)
+	}
+}
+
+// TestConfirmAddWidget_EditReplacesInPlace reproduces the real edit flow
+// end to end against a real file, same pattern internal/server's own
+// SaveDashboard tests use: editing widget 0 of 2 must replace it, not
+// append a third.
+// TestReorderWidget covers both directions of the index-shift arithmetic
+// (dragging a widget later vs. earlier in the list) plus the no-op
+// guards — this is exactly the kind of off-by-one that's easy to get
+// wrong once an element is removed before being reinserted.
+func TestReorderWidget(t *testing.T) {
+	widget := func(title string) dashboard.Widget {
+		return dashboard.Widget{Type: dashboard.WidgetNumber, Title: title, Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage"}}}
+	}
+	titles := func(ws []dashboard.Widget) []string {
+		out := make([]string, len(ws))
+		for i, w := range ws {
+			out[i] = w.Title
+		}
+		return out
+	}
+	newCfg := func(t *testing.T, widgets []dashboard.Widget) *server.Config {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "example.yaml")
+		if err := os.WriteFile(path, []byte("name: example\nconnection:\n  type: local\ngroups:\n  - basic\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return &server.Config{Name: "example", SourceFile: path, Dashboard: widgets}
+	}
+
+	t.Run("move later", func(t *testing.T) {
+		cfg := newCfg(t, []dashboard.Widget{widget("A"), widget("B"), widget("C"), widget("D")})
+		reorderWidget(cfg, cfg.Dashboard, 0, 2) // drag A onto C's spot
+		if got := titles(cfg.Dashboard); !slicesEqual(got, []string{"B", "C", "A", "D"}) {
+			t.Fatalf("got %v, want [B C A D]", got)
+		}
+	})
+
+	t.Run("move earlier", func(t *testing.T) {
+		cfg := newCfg(t, []dashboard.Widget{widget("A"), widget("B"), widget("C"), widget("D")})
+		reorderWidget(cfg, cfg.Dashboard, 2, 0) // drag C onto A's spot
+		if got := titles(cfg.Dashboard); !slicesEqual(got, []string{"C", "A", "B", "D"}) {
+			t.Fatalf("got %v, want [C A B D]", got)
+		}
+	})
+
+	t.Run("drop on self is a no-op", func(t *testing.T) {
+		cfg := newCfg(t, []dashboard.Widget{widget("A"), widget("B")})
+		reorderWidget(cfg, cfg.Dashboard, 1, 1)
+		if got := titles(cfg.Dashboard); !slicesEqual(got, []string{"A", "B"}) {
+			t.Fatalf("got %v, want unchanged [A B]", got)
+		}
+	})
+
+	t.Run("out of range is a no-op", func(t *testing.T) {
+		cfg := newCfg(t, []dashboard.Widget{widget("A"), widget("B")})
+		reorderWidget(cfg, cfg.Dashboard, 5, 0)
+		if got := titles(cfg.Dashboard); !slicesEqual(got, []string{"A", "B"}) {
+			t.Fatalf("got %v, want unchanged [A B]", got)
+		}
+	})
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestConfirmAddWidget_EditReplacesInPlace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "example.yaml")
+	if err := os.WriteFile(path, []byte("name: example\nconnection:\n  type: local\ngroups:\n  - basic\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &server.Config{Name: "example", SourceFile: path, Dashboard: []dashboard.Widget{
+		{Type: dashboard.WidgetNumber, Title: "Old", Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage"}}},
+		{Type: dashboard.WidgetNumber, Title: "Keep", Series: []dashboard.SeriesRef{{Metric: "memory", Measurement: "free"}}},
+	}}
+
+	resetWidgetDraft()
+	editWidgetIdx = 0
+	addWidgetType = dashboard.WidgetNumber
+	addWidgetTitle = "New"
+	addWidgetSinglePick = "cpu.usage"
+
+	confirmAddWidget(cfg)
+	if addWidgetErr != "" {
+		t.Fatalf("confirmAddWidget: %s", addWidgetErr)
+	}
+	if len(cfg.Dashboard) != 2 {
+		t.Fatalf("got %d widgets, want 2 (edit must replace, not append)", len(cfg.Dashboard))
+	}
+	if cfg.Dashboard[0].Title != "New" {
+		t.Errorf("widget 0 title = %q, want New", cfg.Dashboard[0].Title)
+	}
+	if cfg.Dashboard[1].Title != "Keep" {
+		t.Errorf("widget 1 title = %q, want Keep (untouched)", cfg.Dashboard[1].Title)
+	}
+}
+
+func TestBuildPieSlice_FullCircleCloses(t *testing.T) {
+	// A degenerate but real check: a 0-degree sweep must not panic and
+	// must produce a closed (zero-area) path rather than an open one a
+	// FillPath call would otherwise render unpredictably.
+	p := buildPieSlice(50, 50, 40, -90, 0)
+	if p == nil {
+		t.Fatal("buildPieSlice returned nil")
+	}
+	// A non-degenerate slice should not panic either, across the
+	// segment-splitting boundary (>45 degrees needs >1 Bezier segment).
+	p2 := buildPieSlice(50, 50, 40, -90, 270)
+	if p2 == nil {
+		t.Fatal("buildPieSlice returned nil for a 270-degree slice")
+	}
+}

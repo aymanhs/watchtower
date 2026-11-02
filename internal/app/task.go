@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
+	"aymanhs/watchtower/internal/storage"
 )
 
 // MetricTask adapts one (server, metric definition) pair to scheduler.Task.
@@ -36,6 +38,13 @@ type MetricTask struct {
 	// Store, if non-nil, receives this task's results for a GUI (or any
 	// other presentation) to read via Store.Snapshot.
 	Store *state.Store
+	// History, if non-nil, persists every successful observation for
+	// later range queries (charts) — independent of Store, which only
+	// ever holds the latest value. A storage error here is logged, not
+	// treated as a collection failure: a metric that collected fine but
+	// failed to persist its history is not the same thing as a metric
+	// that failed to collect at all.
+	History *storage.Store
 	// Print, if true, writes observations and event transitions to stdout
 	// — the console presentation's entire rendering.
 	Print bool
@@ -75,23 +84,57 @@ func (t *MetricTask) Run(ctx context.Context) error {
 			fmt.Printf("%-32s = %-16v %s\n", o.FullName(), o.Value, o.Timestamp.Format(time.RFC3339))
 		}
 		measurement := strings.TrimPrefix(o.Metric, t.Def.Name+".")
-		if ev := t.Events.EvaluateThreshold(t.ServerName, t.Def, measurement, o.Value, o.Timestamp); ev != nil && t.Print {
+		def, baseKey, instance, ok := t.Def.ResolveMeasurement(measurement)
+		// ruleKey is what event rules and zone derivation are actually
+		// declared against — baseKey for a resolved measurement (the
+		// static case: baseKey == measurement; the per-instance case:
+		// baseKey is the declared suffix, e.g. "used_percent" for a
+		// "root_used_percent"). measurement itself stays the per-alarm
+		// identity either way, so "disk.root" and "disk.data" alarm
+		// independently instead of sharing one ambiguous state.
+		ruleKey := measurement
+		if ok {
+			ruleKey = baseKey
+		}
+		if ev := t.Events.EvaluateThreshold(t.ServerName, t.Def, measurement, ruleKey, o.Value, o.Timestamp); ev != nil && t.Print {
 			printEvent(*ev)
+		}
+		if t.History != nil {
+			if err := t.History.Append(o.FullName(), o.Timestamp, o.Value); err != nil {
+				log.Printf("[%s] history: %v", t.Name(), err)
+			}
 		}
 		measurementSeverity[measurement] = t.Events.CurrentSeverity(t.ServerName, t.Def.Name+"."+measurement)
 
 		mv := state.MeasurementView{Key: measurement, Value: o.Value}
-		def, ok := t.Def.Metrics[measurement]
 		if !ok {
 			measurements = append(measurements, mv) // shouldn't happen; collect.Execute already filters to known keys
 			continue
 		}
 		mv.Unit = def.Unit
+		mv.Type = def.Type
 		if disp := def.Display; disp != nil {
 			mv.Widget = disp.Widget
 			mv.Primary = disp.Primary
 			mv.Label = disp.Label
-			scale, err := state.ResolveScale(disp.Scale, rawValues)
+			mv.Format = disp.Format
+			if instance != "" && disp.Label != "" {
+				// "Used" -> "Used (root)" — the dashboard-free, built-in
+				// metric line needs some way to tell volumes apart too,
+				// not just the dashboard's own per-series labels.
+				mv.Label = disp.Label + " (" + instance + ")"
+			}
+			scaleCfg := disp.Scale
+			if scaleCfg != nil && instance != "" && scaleCfg.MaxRef != "" {
+				// max_ref: total means "this instance's own total", not
+				// a single global one shared across every volume —
+				// qualify it the same way the collector itself named
+				// this instance's sibling measurements.
+				scoped := *scaleCfg
+				scoped.MaxRef = instance + "_" + scoped.MaxRef
+				scaleCfg = &scoped
+			}
+			scale, err := state.ResolveScale(scaleCfg, rawValues)
 			if err != nil {
 				// A bad max_ref this cycle (e.g. the sibling momentarily
 				// missing) degrades to plain text rather than failing the
@@ -108,7 +151,7 @@ func (t *MetricTask) Run(ctx context.Context) error {
 				// (ResolveZones returns nil), which both widgets already
 				// render as their plain unzoned fallback.
 				if scale != nil && (disp.Widget == metric.WidgetGauge || disp.Widget == metric.WidgetBar) {
-					mv.Zones = state.ResolveZones(rulesFor(t.Def, measurement), *scale)
+					mv.Zones = state.ResolveZones(rulesFor(t.Def, ruleKey), *scale)
 				}
 			}
 		}

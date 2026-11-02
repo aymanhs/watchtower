@@ -32,23 +32,28 @@ metrics:
     type: gauge
     display:
       label: Total
+      format: int
   containers_running:
     unit: count
     type: gauge
     display:
       label: Running
+      format: int
   containers_paused:
     unit: count
     type: gauge
     display:
       label: Paused
+      format: int
   containers_stopped:
     unit: count
     type: gauge
     display:
       label: Stopped
+      format: int
   images:
     unit: count
     type: gauge
     display:
       label: Images
+      format: int

@@ -98,16 +98,21 @@ func executeShell(ctx context.Context, runner Runner, serverName string, def *me
 	return observationsFrom(serverName, def, values), nil
 }
 
-// observationsFrom emits one Observation per key in def.Metrics that
-// values actually has — a missing key is skipped, not an error (e.g. an
-// optional field this cycle), matching the collector contract both
-// executeShell and executeHTTP share.
+// observationsFrom emits one Observation per key in values that resolves
+// against def.Metrics — either a direct match (the common case) or, for a
+// collector that discovers its own instances at runtime (disk.yaml's
+// per-volume stats: one declared "used_percent", a real "root_used_percent"
+// / "data_used_percent" per volume actually found this cycle),
+// Definition.ResolveMeasurement's instance-prefixed match. Anything in
+// values that resolves to neither — an unexpected line from the
+// collector's own output, a typo — is silently skipped, not an error:
+// matches the collector contract both executeShell and executeHTTP share,
+// a missing/unrecognized key just means no Observation for it this cycle.
 func observationsFrom(serverName string, def *metric.Definition, values map[string]float64) []Observation {
 	now := time.Now()
-	observations := make([]Observation, 0, len(def.Metrics))
-	for key := range def.Metrics {
-		val, ok := values[key]
-		if !ok {
+	observations := make([]Observation, 0, len(values))
+	for key, val := range values {
+		if _, _, _, ok := def.ResolveMeasurement(key); !ok {
 			continue
 		}
 		observations = append(observations, Observation{

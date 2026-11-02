@@ -7,31 +7,28 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"aymanhs/watchtower/internal/app"
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
+	"aymanhs/watchtower/internal/storage"
 )
 
-// Breakpoints, in DIPs, for the tiers the user asked for:
-//   - compact:  server name + overall status only
-//   - medium:   + one indicator per metric
-//   - detailed: + each metric's measurements, every server stacked
-//   - wide:     master-detail — a compact list, one server's full detail
-//     at a time, decluttering what "detailed" becomes once a server has
-//     several metrics each with several measurements.
-const (
-	breakpointMedium   = 260
-	breakpointDetailed = 480
-	breakpointWide     = 700
-)
-
-func render(c *ui.Context, store *state.Store, events *event.Engine) {
+// render is always the master-detail layout now — a compact sidebar list
+// plus one server's full detail (its own dashboard) at a time — not just
+// above some width breakpoint. There used to be three narrower stacked
+// tiers (compact/medium/detailed) falling back to a per-metric list
+// rendering (metricLine) below that breakpoint; removed once the
+// dashboard existed, rather than keeping two different "look at this
+// server" views where only one of them could show a dashboard at all —
+// resizing the window narrower no longer drops back to the old pane.
+func render(c *ui.Context, store *state.Store, events *event.Engine, shells app.Shells, history *storage.Store, servers app.Servers) {
 	t := c.Theme()
 	width, _ := c.Size()
 	ungrouped, clusters := groupByCluster(store.Snapshot())
 
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
-		toolbar(c)
+		toolbar(c, shells)
 
 		if len(ungrouped) == 0 && len(clusters) == 0 {
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -40,19 +37,7 @@ func render(c *ui.Context, store *state.Store, events *event.Engine) {
 			return
 		}
 
-		if width >= breakpointWide {
-			renderMasterDetail(c, store, events, ungrouped, clusters)
-			return
-		}
-
-		ui.Scroll(c).Fill().Padding(10).Gap(8).Children(func() {
-			for i := range ungrouped {
-				serverRow(c, width, ungrouped[i])
-			}
-			for _, g := range clusters {
-				clusterRow(c, width, g)
-			}
-		})
+		renderMasterDetail(c, store, events, history, servers, ungrouped, clusters, width-sidebarWidth)
 	})
 }
 
@@ -94,27 +79,6 @@ func groupByCluster(servers []state.ServerView) (ungrouped []state.ServerView, c
 	return ungrouped, clusters
 }
 
-// clusterRow renders a cluster's header, then each member indented
-// beneath it via serverRow — the same per-server rendering (and the same
-// three width tiers) a standalone server gets, so drilling from "the
-// cluster" to "this one member" is just reading further down, not a
-// different view.
-func clusterRow(c *ui.Context, width float32, g clusterGroup) {
-	t := c.Theme()
-	ui.Column(c).Gap(6).Children(func() {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			statusDot(c, g.status, 10, clusterTooltip(g))
-			ui.Text(c, g.name).FontSize(13).Bold()
-			ui.Text(c, fmt.Sprintf("(%d)", len(g.members))).FontSize(11).TextColor(t.TextMuted)
-		})
-		ui.Column(c).Gap(6).Padding(0, 0, 0, 18).Children(func() {
-			for _, m := range g.members {
-				serverRow(c, width, m)
-			}
-		})
-	})
-}
-
 // clusterTooltip names any member not currently ok, same spirit as
 // serverTooltip for one server's metrics.
 func clusterTooltip(g clusterGroup) string {
@@ -130,47 +94,6 @@ func clusterTooltip(g clusterGroup) string {
 	return g.name + ": " + strings.Join(worst, ", ")
 }
 
-func serverRow(c *ui.Context, width float32, sv state.ServerView) {
-	t := c.Theme()
-
-	switch {
-	case width < breakpointMedium:
-		// Compact: just a dot and the name. The name's already visible, so
-		// the dot's tooltip adds the one thing that isn't: why it's that
-		// color, when it isn't simply ok.
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			statusDot(c, sv.Status, 10, serverTooltip(sv))
-			ui.Text(c, sv.Name).FontSize(13)
-		})
-
-	case width < breakpointDetailed:
-		// Medium: name, plus one small dot per metric — these have no
-		// visible label at all, so the tooltip is the only way to know
-		// which is which without widening the window.
-		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			statusDot(c, sv.Status, 10, serverTooltip(sv))
-			ui.Text(c, sv.Name).FontSize(13).Width(90)
-			ui.Row(c).Gap(6).Children(func() {
-				for i := range sv.Metrics {
-					statusDot(c, sv.Metrics[i].Status, 8, metricTooltip(sv.Metrics[i]))
-				}
-			})
-		})
-
-	default:
-		// Detailed: name + a line per metric with its measurements.
-		ui.Column(c).Gap(4).Padding(0, 0, 8, 0).Children(func() {
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-				statusDot(c, sv.Status, 12, serverTooltip(sv))
-				ui.Text(c, sv.Name).FontSize(15).Bold()
-			})
-			for i := range sv.Metrics {
-				metricLine(c, t, sv.Metrics[i])
-			}
-		})
-	}
-}
-
 // shortAbbrev generically abbreviates a metric name for a tooltip or a
 // tight label — the first three letters, upper-cased ("cpu" -> "CPU",
 // "memory" -> "MEM"). Deliberately not a hand-maintained per-metric name
@@ -182,17 +105,6 @@ func shortAbbrev(name string) string {
 		r = r[:3]
 	}
 	return string(r)
-}
-
-// metricTooltip is the abbreviation, plus the stale reason when there is
-// one — the tooltip is where the "why is this grey" detail lives, since a
-// stale metric still shows its (greyed) last-known value, not a dead end.
-func metricTooltip(mv state.MetricView) string {
-	abbr := shortAbbrev(mv.Name)
-	if mv.Stale {
-		return fmt.Sprintf("%s: stale — %s", abbr, mv.LastError)
-	}
-	return abbr
 }
 
 // serverTooltip summarizes a server's status for its dot, naming any
@@ -211,86 +123,6 @@ func serverTooltip(sv state.ServerView) string {
 	return sv.Name + ": " + strings.Join(worst, ", ")
 }
 
-// metricLine renders one metric's measurements entirely by what each one's
-// own display config says — widget choice, scale, and primary — never by
-// guessing from a unit string. A measurement with no display block (the
-// common case) renders as plain text, exactly as a brand-new metric
-// dropped into metrics/ with no GUI changes at all should.
-func metricLine(c *ui.Context, t *ui.Theme, mv state.MetricView) {
-	ui.Row(c).Gap(12).AlignItems(ui.Center).Padding(0, 0, 0, 22).Children(func() {
-		statusDot(c, mv.Status, 8, metricTooltip(mv))
-		ui.Text(c, mv.Name).FontSize(12).Width(60).TextColor(t.TextMuted)
-		// Stale does NOT stop here: the last-known gauges/bars/values below
-		// still render, just in grey (mv.Status is StatusUnknown while
-		// stale, and every color in this function comes from it) — a
-		// failed collection must show the last good reading, not a blank.
-		// The reason why is in the dot's tooltip (metricTooltip above).
-		color := statusColor(t, mv.Status)
-
-		var primary *state.MeasurementView
-		var bars []barEntry
-		var dots []state.MeasurementView
-		var plain []state.MeasurementView
-		for i := range mv.Measurements {
-			m := mv.Measurements[i]
-			switch {
-			case m.Primary && m.Scale != nil:
-				primary = &m
-			case m.Widget == metric.WidgetBar && m.Scale != nil:
-				bars = append(bars, barEntry{m.DisplayLabel(), m.Value, *m.Scale, m.Zones, formatValue(m.Unit, m.Value)})
-			case m.Widget == metric.WidgetDot:
-				dots = append(dots, m)
-			default:
-				// Any bar/gauge whose Scale failed to resolve this cycle
-				// also lands here (internal/app degrades those to plain
-				// text on purpose), alongside anything with no display
-				// block at all.
-				plain = append(plain, m)
-			}
-		}
-
-		if primary != nil {
-			pressureGauge(c, *primary.Scale, primary.Value, primary.Zones, color, 64, percentLabel(primary.Value))
-		}
-
-		if len(bars) > 0 {
-			ui.Column(c).Gap(4).Children(func() {
-				for _, be := range bars {
-					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, be.label).FontSize(11).Width(40).TextColor(t.TextMuted)
-						bar(c, be, color, 90, 6)
-						ui.Text(c, be.text).FontSize(11)
-					})
-				}
-			})
-		}
-
-		if len(dots) > 0 {
-			ui.Row(c).Gap(10).Children(func() {
-				for _, m := range dots {
-					// A dot measurement is a state, not a value — "active"
-					// reads better as a colored dot + its label than as
-					// "active=1". Uses the metric's own (possibly stale,
-					// possibly aggregate-across-measurements) color, same
-					// as every other widget on this line.
-					ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-						statusDot(c, mv.Status, 8, m.DisplayLabel())
-						ui.Text(c, m.DisplayLabel()).FontSize(11).TextColor(t.TextMuted)
-					})
-				}
-			})
-		}
-
-		if len(plain) > 0 {
-			ui.Row(c).Gap(10).Children(func() {
-				for _, m := range plain {
-					ui.Text(c, m.DisplayLabel()+"="+formatValue(m.Unit, m.Value)).FontSize(12)
-				}
-			})
-		}
-	})
-}
-
 func statusDot(c *ui.Context, status state.Status, size float32, tooltip string) {
 	t := c.Theme()
 	e := ui.Box(c).Size(size, size).Radius(size / 2).Background(statusColor(t, status))
@@ -299,13 +131,29 @@ func statusDot(c *ui.Context, status state.Status, size float32, tooltip string)
 	}
 }
 
-// formatValue is a minimal, deliberately non-exhaustive humanizer — bytes
-// get GiB-scaled, everything else prints as-is. Good enough for a first
-// PoC; a real unit-aware formatter belongs with the rest of the metadata
-// (display hints) work, not hand-rolled in the GUI.
-func formatValue(unit string, v float64) string {
+// formatValue prints one value the way its measurement declared it should
+// look: bytes always get GiB-scaled (that's the unit itself saying so, not
+// a guess), then format picks the rest — FormatHuman's K/M/B scaling,
+// FormatInt's no-decimals, or FormatDefault's plain two decimals. The GUI
+// never infers this from a value's magnitude; a metric that wants "always
+// humanized" or "always a whole number" says so in its own display.format,
+// same principle as Widget.
+func formatValue(unit string, format metric.Format, v float64) string {
 	if unit == "bytes" && v >= 1<<20 {
 		return fmt.Sprintf("%.1fGiB", v/(1<<30))
+	}
+	switch format {
+	case metric.FormatInt:
+		return fmt.Sprintf("%.0f", v)
+	case metric.FormatHuman:
+		switch {
+		case v >= 1e9:
+			return fmt.Sprintf("%.2fB", v/1e9)
+		case v >= 1e6:
+			return fmt.Sprintf("%.2fM", v/1e6)
+		case v >= 1e3:
+			return fmt.Sprintf("%.2fK", v/1e3)
+		}
 	}
 	return fmt.Sprintf("%.2f", v)
 }

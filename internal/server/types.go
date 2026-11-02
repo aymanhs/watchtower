@@ -15,6 +15,7 @@ package server
 import (
 	"fmt"
 
+	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/metric"
 )
 
@@ -64,7 +65,16 @@ type Config struct {
 	// Connection, so a cluster can span machines freely.
 	Cluster string `yaml:"cluster,omitempty"`
 
-	// SourceFile is set by the loader, not read from YAML, for diagnostics.
+	// Dashboard is this server's own user-composed widget grid — see
+	// internal/dashboard's package doc for why it's deliberately
+	// decoupled from a metric's own Display-driven auto-rendering.
+	// Edited either by hand (it's config-as-code, same as Groups/Metrics)
+	// or by the GUI's own add/remove-widget controls, which call
+	// SaveDashboard to write changes back to SourceFile in place.
+	Dashboard []dashboard.Widget `yaml:"dashboard,omitempty"`
+
+	// SourceFile is set by the loader, not read from YAML, for diagnostics
+	// and so SaveDashboard knows which file to rewrite.
 	SourceFile string `yaml:"-"`
 }
 
@@ -96,6 +106,11 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Groups) == 0 {
 		return fmt.Errorf("server %q: must select at least one group", c.Name)
+	}
+	for i, w := range c.Dashboard {
+		if err := w.Validate(); err != nil {
+			return fmt.Errorf("server %q: dashboard widget %d: %w", c.Name, i, err)
+		}
 	}
 	return nil
 }

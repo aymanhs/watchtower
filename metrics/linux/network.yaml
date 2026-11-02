@@ -44,11 +44,14 @@ metrics:
   rx_packets:
     unit: count
     type: counter
+    display:
+      format: human
   rx_errors:
     unit: count
     type: gauge
     display:
       label: Rx Errors
+      format: int
   tx_bytes:
     unit: bytes
     type: counter
@@ -57,11 +60,14 @@ metrics:
   tx_packets:
     unit: count
     type: counter
+    display:
+      format: human
   tx_errors:
     unit: count
     type: gauge
     display:
       label: Tx Errors
+      format: int
 # rx_errors/tx_errors are cumulative counters (since boot), not a
 # per-interval rate — the engine has no counter-delta/rate computation
 # yet, so "above 0" means "has ever had an error", not "is having errors

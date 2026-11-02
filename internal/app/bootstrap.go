@@ -18,6 +18,7 @@ import (
 	"aymanhs/watchtower/internal/server"
 	"aymanhs/watchtower/internal/sshmgr"
 	"aymanhs/watchtower/internal/state"
+	"aymanhs/watchtower/internal/storage"
 )
 
 // Paths is where Bootstrap loads configuration from, relative to the
@@ -36,34 +37,55 @@ var DefaultPaths = Paths{Metrics: "metrics", Groups: "groups", Servers: "data/se
 // independent of any metric's own collection timeout.
 const connectWarmupTimeout = 10 * time.Second
 
+// Shells is a lookup from server name to its persistent SSH client, for
+// whoever wants to open an interactive session on it (cmd/watchtower-gui's
+// terminal button) — only ssh-type servers are in it; a "local" server
+// has no remote connection to open a shell on.
+type Shells map[string]*sshmgr.Client
+
+// Servers is a lookup from server name to its loaded *server.Config, for
+// whoever wants more than a Shell out of it — the GUI's per-server
+// dashboard reads Config.Dashboard and writes edits back via
+// server.SaveDashboard(cfg, ...), which needs the same *Config the rest
+// of the engine resolved groups/metrics against, not a second copy.
+type Servers map[string]*server.Config
+
 // Bootstrap loads metric/group/server configuration, connects to every
 // server up front, and returns one scheduler.Task per (server, metric)
-// pair the servers' groups resolve to. events and store are wired into
-// every task; store may be nil (no GUI state kept), print controls
-// whether tasks also write to stdout.
-func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *state.Store, print bool) ([]scheduler.Task, error) {
+// pair the servers' groups resolve to, plus Shells for opening an
+// interactive session separately from metric collection. events and
+// store are wired into every task; store may be nil (no GUI state kept),
+// print controls whether tasks also write to stdout. history, if non-nil,
+// persists every successful observation for later range queries (charts)
+// — independent of store, which only ever holds the latest value.
+func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *state.Store, history *storage.Store, print bool) ([]scheduler.Task, Shells, Servers, error) {
 	defs, err := metric.LoadDefinitions(paths.Metrics)
 	if err != nil {
-		return nil, fmt.Errorf("load metric definitions: %w", err)
+		return nil, nil, nil, fmt.Errorf("load metric definitions: %w", err)
 	}
 	registry, err := metric.NewRegistry(defs)
 	if err != nil {
-		return nil, fmt.Errorf("build metric registry: %w", err)
+		return nil, nil, nil, fmt.Errorf("build metric registry: %w", err)
 	}
 	log.Printf("loaded %d metric definitions", len(defs))
 
 	servers, err := server.LoadServers(paths.Servers)
 	if err != nil {
-		return nil, fmt.Errorf("load server configs: %w", err)
+		return nil, nil, nil, fmt.Errorf("load server configs: %w", err)
 	}
 	if len(servers) == 0 {
-		return nil, fmt.Errorf("no servers configured in %s (gitignored — see README)", paths.Servers)
+		return nil, nil, nil, fmt.Errorf("no servers configured in %s (gitignored — see README)", paths.Servers)
 	}
 	log.Printf("loaded %d server configs", len(servers))
 
+	serverConfigs := make(Servers, len(servers))
+	for _, cfg := range servers {
+		serverConfigs[cfg.Name] = cfg
+	}
+
 	groupReg, err := loadGroupRegistry(paths.Groups)
 	if err != nil {
-		return nil, fmt.Errorf("load group configs: %w", err)
+		return nil, nil, nil, fmt.Errorf("load group configs: %w", err)
 	}
 
 	mgr := sshmgr.NewManager()
@@ -104,11 +126,12 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 				Config:          config,
 				Events:          events,
 				Store:           store,
+				History:         history,
 				Print:           print,
 			})
 		}
 	}
-	return tasks, nil
+	return tasks, Shells(sshClients), serverConfigs, nil
 }
 
 // loadGroupRegistry loads group-level metric overrides from dir. A missing

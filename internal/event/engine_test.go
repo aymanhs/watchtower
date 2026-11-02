@@ -28,48 +28,48 @@ func TestEvaluateThreshold_RaiseEscalateRecover(t *testing.T) {
 	now := time.Now()
 
 	// Normal -> normal: no event.
-	if ev := e.EvaluateThreshold("s1", def, "used_percent", 50, now); ev != nil {
+	if ev := e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 50, now); ev != nil {
 		t.Fatalf("got event %+v at 50%%, want nil", ev)
 	}
 
 	// Crosses warning threshold: raise warning.
-	ev := e.EvaluateThreshold("s1", def, "used_percent", 82, now)
+	ev := e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 82, now)
 	if ev == nil || ev.Kind != KindRaised || ev.Severity != metric.SeverityWarning || ev.RuleName != "disk.warning" {
 		t.Fatalf("got %+v, want raised warning via disk.warning", ev)
 	}
 
 	// Still above 80 but below 90: no new event (dedup).
-	if ev := e.EvaluateThreshold("s1", def, "used_percent", 83, now); ev != nil {
+	if ev := e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 83, now); ev != nil {
 		t.Fatalf("got %+v at 83%% while already warning, want nil (dedup)", ev)
 	}
 
 	// Crosses critical threshold: escalate.
-	ev = e.EvaluateThreshold("s1", def, "used_percent", 95, now)
+	ev = e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 95, now)
 	if ev == nil || ev.Kind != KindRaised || ev.Severity != metric.SeverityCritical || ev.RuleName != "disk.critical" {
 		t.Fatalf("got %+v, want escalated to critical via disk.critical", ev)
 	}
 
 	// Drops back below 90 (warning's threshold) but not below critical's
 	// recover_below (85): must stay critical — hysteresis, no event.
-	if ev := e.EvaluateThreshold("s1", def, "used_percent", 87, now); ev != nil {
+	if ev := e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 87, now); ev != nil {
 		t.Fatalf("got %+v at 87%% (above recover_below=85), want nil (still critical)", ev)
 	}
 
 	// Drops below 85: recovers, but still above warning's 80, so steps
 	// down to warning, not all the way to normal.
-	ev = e.EvaluateThreshold("s1", def, "used_percent", 82, now)
+	ev = e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 82, now)
 	if ev == nil || ev.Kind != KindRecovered || ev.Severity != metric.SeverityWarning || ev.RuleName != "disk.warning" {
 		t.Fatalf("got %+v, want recovered down to warning", ev)
 	}
 
 	// Drops below 80: fully recovers to normal.
-	ev = e.EvaluateThreshold("s1", def, "used_percent", 50, now)
+	ev = e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 50, now)
 	if ev == nil || ev.Kind != KindRecovered || ev.Severity != "" {
 		t.Fatalf("got %+v, want full recovery to normal", ev)
 	}
 
 	// Staying normal: no further event.
-	if ev := e.EvaluateThreshold("s1", def, "used_percent", 10, now); ev != nil {
+	if ev := e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 10, now); ev != nil {
 		t.Fatalf("got %+v while already normal, want nil", ev)
 	}
 }
@@ -84,11 +84,11 @@ func TestEvaluateThreshold_NoHysteresisDefaultsToThreshold(t *testing.T) {
 	}
 	now := time.Now()
 
-	if ev := e.EvaluateThreshold("s1", def, "load1", 4.5, now); ev == nil || ev.Kind != KindRaised {
+	if ev := e.EvaluateThreshold("s1", def, "load1", "load1", 4.5, now); ev == nil || ev.Kind != KindRaised {
 		t.Fatalf("got %+v, want raised", ev)
 	}
 	// No recover_below set: recovery is immediate at <= threshold.
-	if ev := e.EvaluateThreshold("s1", def, "load1", 4.0, now); ev == nil || ev.Kind != KindRecovered {
+	if ev := e.EvaluateThreshold("s1", def, "load1", "load1", 4.0, now); ev == nil || ev.Kind != KindRecovered {
 		t.Fatalf("got %+v at exactly threshold with no hysteresis, want recovered", ev)
 	}
 }
@@ -98,12 +98,45 @@ func TestEvaluateThreshold_IndependentPerServerAndMeasurement(t *testing.T) {
 	def := diskDef()
 	now := time.Now()
 
-	if ev := e.EvaluateThreshold("s1", def, "used_percent", 95, now); ev == nil {
+	if ev := e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 95, now); ev == nil {
 		t.Fatal("expected event for s1")
 	}
 	// s2 is a different entity entirely: starts normal regardless of s1's state.
-	if ev := e.EvaluateThreshold("s2", def, "used_percent", 10, now); ev != nil {
+	if ev := e.EvaluateThreshold("s2", def, "used_percent", "used_percent", 10, now); ev != nil {
 		t.Fatalf("got %+v for unrelated server s2, want nil", ev)
+	}
+}
+
+// TestEvaluateThreshold_InstanceIdentityVsRuleKey reproduces disk.yaml's
+// per-volume shape: one rule set declared against "used_percent", applied
+// to two differently-named instances ("root_used_percent",
+// "data_used_percent") via a shared ruleKey — each instance's alarm state
+// must stay independent (measurement is the identity), while both still
+// use the one declared rule (ruleKey is the lookup).
+func TestEvaluateThreshold_InstanceIdentityVsRuleKey(t *testing.T) {
+	e := NewEngine(0)
+	def := diskDef()
+	now := time.Now()
+
+	rootEv := e.EvaluateThreshold("s1", def, "root_used_percent", "used_percent", 95, now)
+	if rootEv == nil || rootEv.Kind != KindRaised {
+		t.Fatalf("got %+v, want a raised event for root at 95%%", rootEv)
+	}
+	if rootEv.Metric != "disk.root_used_percent" {
+		t.Errorf("got Metric=%q, want disk.root_used_percent (per-instance identity, not the bare rule name)", rootEv.Metric)
+	}
+
+	// data is a different instance entirely — normal value, no event,
+	// and root's own active alarm must not have leaked onto it.
+	dataEv := e.EvaluateThreshold("s1", def, "data_used_percent", "used_percent", 10, now)
+	if dataEv != nil {
+		t.Fatalf("got %+v for data instance at 10%%, want nil (independent of root's alarm)", dataEv)
+	}
+	if sev := e.CurrentSeverity("s1", "disk.data_used_percent"); sev != "" {
+		t.Errorf("data instance severity = %q, want \"\" (normal)", sev)
+	}
+	if sev := e.CurrentSeverity("s1", "disk.root_used_percent"); sev != metric.SeverityCritical {
+		t.Errorf("root instance severity = %q, want critical (unaffected by evaluating data)", sev)
 	}
 }
 
@@ -139,7 +172,7 @@ func TestHistoryAndAcknowledge(t *testing.T) {
 	def := diskDef()
 	now := time.Now()
 
-	e.EvaluateThreshold("s1", def, "used_percent", 95, now)
+	e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 95, now)
 	hist := e.History()
 	if len(hist) != 1 {
 		t.Fatalf("got %d history entries, want 1", len(hist))
@@ -167,7 +200,7 @@ func TestCurrentSeverity(t *testing.T) {
 	if got := e.CurrentSeverity("s1", "disk.used_percent"); got != "" {
 		t.Fatalf("got %q before any evaluation, want normal", got)
 	}
-	e.EvaluateThreshold("s1", def, "used_percent", 95, now)
+	e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 95, now)
 	if got := e.CurrentSeverity("s1", "disk.used_percent"); got != metric.SeverityCritical {
 		t.Fatalf("got %q after breaching critical, want critical", got)
 	}
@@ -204,9 +237,9 @@ func TestHistory_BoundedByMaxHistory(t *testing.T) {
 		},
 	}
 	// Flip the state three times (raise, recover, raise) to generate 3 events.
-	e.EvaluateThreshold("s1", def, "load1", 2, now)
-	e.EvaluateThreshold("s1", def, "load1", 0, now)
-	e.EvaluateThreshold("s1", def, "load1", 2, now)
+	e.EvaluateThreshold("s1", def, "load1", "load1", 2, now)
+	e.EvaluateThreshold("s1", def, "load1", "load1", 0, now)
+	e.EvaluateThreshold("s1", def, "load1", "load1", 2, now)
 
 	hist := e.History()
 	if len(hist) != 2 {

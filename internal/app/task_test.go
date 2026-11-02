@@ -10,6 +10,7 @@ import (
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
+	"aymanhs/watchtower/internal/storage"
 )
 
 // fakeRunner returns canned output for collect.Execute, same pattern as
@@ -149,6 +150,62 @@ func TestMetricTask_ResolvesDisplayIntoStore(t *testing.T) {
 	}
 }
 
+// TestMetricTask_PerInstanceMeasurements reproduces disk.yaml's per-volume
+// shape live, through the real Run path: a collector that discovers its
+// own instances at runtime and emits them instance-prefixed
+// ("root_total"/"root_used"/..., "data_total"/"data_used"/...) against
+// one statically-declared "total"/"used"/"used_percent" schema.
+func TestMetricTask_PerInstanceMeasurements(t *testing.T) {
+	store := state.NewStore()
+	task := &MetricTask{
+		ServerName: "s1",
+		Def:        diskDef(),
+		Client: fakeRunner{out: "root_total=1000\nroot_used=500\nroot_used_percent=50\n" +
+			"data_total=2000\ndata_used=1900\ndata_used_percent=95\n"},
+		CollectInterval: 10 * time.Second,
+		Deadline:        5 * time.Second,
+		Events:          event.NewEngine(0),
+		Store:           store,
+	}
+
+	if err := task.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	snap := store.Snapshot()
+	byKey := map[string]state.MeasurementView{}
+	for _, m := range snap[0].Metrics[0].Measurements {
+		byKey[m.Key] = m
+	}
+
+	rootUsed := byKey["root_used"]
+	if rootUsed.Scale == nil || rootUsed.Scale.Max != 1000 {
+		t.Fatalf("root_used.Scale = %+v, want max_ref 'total' resolved against root's own total (1000), not data's (2000)", rootUsed.Scale)
+	}
+	dataUsed := byKey["data_used"]
+	if dataUsed.Scale == nil || dataUsed.Scale.Max != 2000 {
+		t.Fatalf("data_used.Scale = %+v, want max_ref 'total' resolved against data's own total (2000)", dataUsed.Scale)
+	}
+
+	rootPct := byKey["root_used_percent"]
+	if rootPct.DisplayLabel() != "Disk Usage (root)" {
+		t.Errorf("root_used_percent.DisplayLabel() = %q, want %q (instance-annotated)", rootPct.DisplayLabel(), "Disk Usage (root)")
+	}
+	dataPct := byKey["data_used_percent"]
+	if dataPct.DisplayLabel() != "Disk Usage (data)" {
+		t.Errorf("data_used_percent.DisplayLabel() = %q, want %q", dataPct.DisplayLabel(), "Disk Usage (data)")
+	}
+
+	// root at 50% and data at 95% must alarm independently — data alone
+	// crosses both thresholds, root crosses neither.
+	if sev := task.Events.CurrentSeverity("s1", "disk.root_used_percent"); sev != "" {
+		t.Errorf("root severity = %q, want \"\" (50%% breaches nothing)", sev)
+	}
+	if sev := task.Events.CurrentSeverity("s1", "disk.data_used_percent"); sev != metric.SeverityCritical {
+		t.Errorf("data severity = %q, want critical (95%% breaches the shared used_percent rule)", sev)
+	}
+}
+
 func TestMetricTask_MaxRefMissingDegradesToTextNotFailure(t *testing.T) {
 	store := state.NewStore()
 	def := diskDef()
@@ -197,5 +254,52 @@ func TestMetricTask_CollectorErrorStillMarksStale(t *testing.T) {
 	snap := store.Snapshot()
 	if snap[0].Metrics[0].Status != state.StatusUnknown {
 		t.Fatalf("status = %v, want unknown (stale)", snap[0].Metrics[0].Status)
+	}
+}
+
+func TestMetricTask_WritesHistory(t *testing.T) {
+	hist, err := storage.Open(t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	defer hist.Close()
+
+	task := &MetricTask{
+		ServerName:      "s1",
+		Def:             diskDef(),
+		Client:          fakeRunner{out: "total=1000\nused=500\nused_percent=50\n"},
+		CollectInterval: 10 * time.Second,
+		Deadline:        5 * time.Second,
+		Events:          event.NewEngine(0),
+		History:         hist,
+	}
+	if err := task.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	now := time.Now()
+	points, err := hist.Query("s1/disk.used_percent", now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(points) != 1 || points[0].Value != 50 {
+		t.Fatalf("got %+v, want one point valued 50", points)
+	}
+}
+
+func TestMetricTask_HistoryNilIsFine(t *testing.T) {
+	// History is optional (nil for the console binary today) — Run must
+	// not panic or error just because there's nowhere to persist to.
+	task := &MetricTask{
+		ServerName:      "s1",
+		Def:             diskDef(),
+		Client:          fakeRunner{out: "total=1000\nused=500\nused_percent=50\n"},
+		CollectInterval: 10 * time.Second,
+		Deadline:        5 * time.Second,
+		Events:          event.NewEngine(0),
+		History:         nil,
+	}
+	if err := task.Run(context.Background()); err != nil {
+		t.Fatalf("Run with nil History: %v", err)
 	}
 }

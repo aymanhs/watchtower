@@ -93,12 +93,21 @@ type MeasurementView struct {
 	Key   string // e.g. "available", "used"
 	Value float64
 	Unit  string
+	// Type is the measurement's own metric.Type (gauge/counter/rate),
+	// independent of Display — always set, whether or not there's a
+	// display block at all. A presentation charting history needs this:
+	// a cumulative counter has to be shown as a rate, not plotted raw.
+	Type metric.Type
 
 	Widget  metric.Widget
 	Primary bool
 	Scale   *Scale // nil unless Widget needs one and it resolved successfully
 	Zones   []Zone // only ever set for a Gauge; nil if the measurement has no event rules to derive bands from
 	Label   string // human-friendly name to show instead of Key; "" means show Key
+	// Format is the measurement's own metric.Format (its Display's, if it
+	// has one) — how a presentation should print its number. Always set
+	// from Display when there is one, "" (FormatDefault) otherwise.
+	Format metric.Format
 }
 
 // DisplayLabel is what a GUI should show for this measurement's name —

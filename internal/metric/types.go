@@ -7,6 +7,7 @@ package metric
 
 import (
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -169,6 +170,28 @@ type Definition struct {
 
 	// SourceFile is set by the loader, not read from YAML, for diagnostics.
 	SourceFile string `yaml:"-"`
+}
+
+// ResolveMeasurement looks up name against d.Metrics. The common case is
+// a direct hit — name matches a declared key exactly, baseKey == name,
+// instance == "". The other case is a dynamically per-instance name a
+// collector can legitimately emit without it being individually declared
+// (disk.yaml's per-volume stats: one declared "used_percent" measurement,
+// a collector that discovers real volumes at runtime and emits
+// "root_used_percent", "data_used_percent", ... — baseKey is "used_percent"
+// (what Display/Scale/events were actually declared against), instance is
+// "root"/"data" (everything before the matched "_<baseKey>" suffix). ok
+// is false only when neither resolves.
+func (d *Definition) ResolveMeasurement(name string) (m Measurement, baseKey, instance string, ok bool) {
+	if m, ok := d.Metrics[name]; ok {
+		return m, name, "", true
+	}
+	for key, m := range d.Metrics {
+		if suffix := "_" + key; strings.HasSuffix(name, suffix) {
+			return m, key, strings.TrimSuffix(name, suffix), true
+		}
+	}
+	return Measurement{}, "", "", false
 }
 
 // Validate checks structural invariants the YAML loader cannot enforce by

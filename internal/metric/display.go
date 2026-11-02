@@ -38,6 +38,38 @@ func (w Widget) needsScale() bool {
 	return w == WidgetBar || w == WidgetGauge
 }
 
+// Format is an explicit hint for how the GUI should render a measurement's
+// number — declarative, same spirit as Widget: the GUI never guesses from
+// the value's magnitude or the unit string, it reads what the definition
+// says. "" (the default) is two decimal places (or, for unit "bytes", the
+// existing GiB scaling — that one's driven by the unit itself, not a
+// guess).
+type Format string
+
+const (
+	// FormatDefault is two decimal places — unchanged from before Format
+	// existed.
+	FormatDefault Format = ""
+	// FormatInt rounds to a whole number, no decimals — for measurements
+	// that are always integers (a container count, a packet error
+	// tally): "3" reads as what it is, "3.00" doesn't.
+	FormatInt Format = "int"
+	// FormatHuman scales a large value with a K/M/B suffix (1,500 ->
+	// "1.50K", 13,972,777 -> "13.97M") — for counters/counts that
+	// legitimately get large (packets, requests) where the raw number is
+	// technically correct but unreadable at a glance.
+	FormatHuman Format = "human"
+)
+
+func (f Format) valid() bool {
+	switch f {
+	case FormatDefault, FormatInt, FormatHuman:
+		return true
+	default:
+		return false
+	}
+}
+
 // Scale defines the 0%-to-100% range a Bar or Gauge widget draws against.
 // Set Max directly for a fixed reference (e.g. a load average's "fully
 // loaded" point), or MaxRef to use another measurement in the same
@@ -64,6 +96,11 @@ type Display struct {
 	// isn't what you'd want to read in a control room. Unset means show
 	// the key as-is, exactly as before this field existed.
 	Label string `yaml:"label,omitempty"`
+
+	// Format is how the GUI prints this measurement's number — see
+	// Format's own doc comment. Unset is FormatDefault, exactly as
+	// before this field existed.
+	Format Format `yaml:"format,omitempty"`
 }
 
 // validateDisplay checks one measurement's Display block, if present,
@@ -75,6 +112,9 @@ func (d *Definition) validateDisplay(key string, m Measurement) error {
 	disp := m.Display
 	if !disp.Widget.valid() {
 		return fmt.Errorf("metric %q: measurement %q has unknown display.widget %q", d.Name, key, disp.Widget)
+	}
+	if !disp.Format.valid() {
+		return fmt.Errorf("metric %q: measurement %q has unknown display.format %q", d.Name, key, disp.Format)
 	}
 	if disp.Widget.needsScale() {
 		if disp.Scale == nil {

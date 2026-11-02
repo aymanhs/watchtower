@@ -1,6 +1,9 @@
 package main
 
-import "github.com/egoist/mygo"
+import (
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+)
 
 // MyGo already follows the OS light/dark preference by default
 // (mygo.ThemeSystem) — every color in this GUI comes from c.Theme(), never
@@ -20,13 +23,26 @@ func cycleTheme() {
 	mygo.Theme.SetSource(mygo.ThemeSystem)
 }
 
-func themeLabel() string {
+// themeIcon mirrors the current theme source — sun for light, moon for
+// dark, a monitor for "follow the system" (the default).
+func themeIcon() *ui.SVG {
 	switch mygo.Theme.Source() {
 	case mygo.ThemeLight:
-		return "☀ light"
+		return sunIcon
 	case mygo.ThemeDark:
-		return "☾ dark"
+		return moonIcon
 	default:
-		return "⚙ system"
+		return monitorIcon
+	}
+}
+
+func themeTooltip() string {
+	switch mygo.Theme.Source() {
+	case mygo.ThemeLight:
+		return "Theme: light (click for dark)"
+	case mygo.ThemeDark:
+		return "Theme: dark (click to follow system)"
+	default:
+		return "Theme: system (click for light)"
 	}
 }

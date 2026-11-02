@@ -46,10 +46,20 @@ func NewEngine(maxHistory int) *Engine {
 }
 
 // EvaluateThreshold checks one measurement's current value against the
-// subset of def.Events targeting it, returning any Event the transition
-// produced (nil if the state didn't change). Call once per observation.
-func (e *Engine) EvaluateThreshold(serverName string, def *metric.Definition, measurement string, value float64, ts time.Time) *Event {
-	rules := rulesFor(def, measurement)
+// subset of def.Events targeting ruleKey, returning any Event the
+// transition produced (nil if the state didn't change). Call once per
+// observation.
+//
+// measurement and ruleKey are the same string for an ordinarily-declared
+// measurement — they only diverge for a dynamically per-instance one
+// (disk.yaml's per-volume stats: "root_used_percent", "data_used_percent"
+// emitted from one declared "used_percent" rule set). measurement keeps
+// each instance's alarm state and identity separate ("disk.root is at
+// 92%", not one ambiguous "disk is at 92%" shared across every volume);
+// ruleKey is the name event rules were actually declared under, so one
+// rule set still applies to however many instances a collector emits.
+func (e *Engine) EvaluateThreshold(serverName string, def *metric.Definition, measurement, ruleKey string, value float64, ts time.Time) *Event {
+	rules := rulesFor(def, ruleKey)
 	if len(rules) == 0 {
 		return nil
 	}

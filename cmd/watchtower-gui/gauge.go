@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"math"
 
 	"github.com/egoist/mygo/ui"
@@ -42,45 +41,6 @@ func severityColor(t *ui.Theme, sev metric.Severity) ui.Color {
 	}
 }
 
-// barEntry is one already-resolved small bar: whatever its measurement's
-// own display config said, by the time it's a barEntry it's a value, a
-// scale and (maybe) zones to draw.
-type barEntry struct {
-	label string
-	value float64
-	scale state.Scale
-	zones []state.Zone
-	text  string
-}
-
-// bar draws a horizontal progress indicator.
-//
-// With zones (same source as pressureGauge's: state.ResolveZones from the
-// measurement's own event rules), the bar's face is the colored threshold
-// bands themselves, with a thin marker line at the current value — the
-// bar's equivalent of the gauge's dial-plus-marker, not a different idea.
-//
-// Without zones, it's the plain flat-track-plus-fill bar this always was.
-func bar(c *ui.Context, be barEntry, fallbackColor ui.Color, w, h float32) ui.Element {
-	t := c.Theme()
-	rad := h / 2
-	e := ui.Box(c).Width(w).Height(h).Radius(rad).Clip()
-	e.Draw(func(p *ui.Painter, r ui.Rect) {
-		if len(be.zones) > 0 {
-			for _, z := range be.zones {
-				from, to := be.scale.Fraction(z.From), be.scale.Fraction(z.To)
-				p.Fill(ui.Rect{X: r.X + r.W*from, Y: r.Y, W: r.W * (to - from), H: r.H}, severityColor(t, z.Severity), 0)
-			}
-			mx := r.X + r.W*be.scale.Fraction(be.value)
-			p.Fill(ui.Rect{X: mx - 1, Y: r.Y, W: 2, H: r.H}, t.Text, 0)
-		} else {
-			p.Fill(r, t.Border, 0)
-			p.Fill(ui.Rect{X: r.X, Y: r.Y, W: r.W * be.scale.Fraction(be.value), H: r.H}, fallbackColor, rad)
-		}
-	})
-	return e
-}
-
 // Pressure-gauge sweep: starts bottom-left, goes clockwise over the top,
 // ends bottom-right — the classic speedometer shape, with a gap at the
 // bottom. Angles are degrees in mygo's screen-space convention (0° = East,
@@ -117,12 +77,27 @@ func pressureGauge(c *ui.Context, scale state.Scale, value float64, zones []stat
 				band := buildArc(cx, cy, radius, gaugeStartDeg+gaugeSweepDeg*float64(from), gaugeSweepDeg*float64(to-from))
 				p.StrokePath(band, stroke, severityColor(t, z.Severity))
 			}
+			// Needle, not a dot on the band — drawn from the center
+			// outward (short of the band itself, so it doesn't overlap
+			// the colored arc), with a small hub where it meets center.
+			// This runs before the center label is added as a Child
+			// below, so the needle's inner end sits behind the number,
+			// same stacking every other gauge element already uses.
+			// Deliberately t.TextMuted, not t.Text: the center label is
+			// t.Text, and a needle the same color as the number it
+			// points past reads as one blurred shape, not two things.
 			markerDeg := gaugeStartDeg + gaugeSweepDeg*float64(frac)
-			mx := cx + radius*float32(math.Cos(markerDeg*math.Pi/180))
-			my := cy + radius*float32(math.Sin(markerDeg*math.Pi/180))
-			marker := new(ui.Path)
-			marker.Circle(mx, my, stroke*0.5)
-			p.FillPath(marker, t.Text)
+			needleLen := radius - stroke*0.6
+			nx := cx + needleLen*float32(math.Cos(markerDeg*math.Pi/180))
+			ny := cy + needleLen*float32(math.Sin(markerDeg*math.Pi/180))
+			needle := new(ui.Path)
+			needle.MoveTo(cx, cy)
+			needle.LineTo(nx, ny)
+			needle.Cap(ui.RoundCap)
+			p.StrokePath(needle, stroke*0.16, t.TextMuted)
+			hub := new(ui.Path)
+			hub.Circle(cx, cy, stroke*0.22)
+			p.FillPath(hub, t.TextMuted)
 		} else {
 			track := buildArc(cx, cy, radius, gaugeStartDeg, gaugeSweepDeg)
 			track.Cap(ui.RoundCap)
@@ -135,9 +110,31 @@ func pressureGauge(c *ui.Context, scale state.Scale, value float64, zones []stat
 		}
 	})
 	e.Children(func() {
-		ui.Text(c, centerLabel).FontSize(diameter * 0.22).Bold().TextColor(t.Text)
+		ui.Text(c, centerLabel).FontSize(centerLabelFontSize(diameter, centerLabel)).Bold().TextColor(t.Text)
 	})
 	return e
+}
+
+// centerLabelFontSize picks a size that fits label inside the gauge's
+// own inner circle, not just diameter*0.22 — that constant reads fine
+// for the "42%"-shaped labels pressureGauge was first built around, but
+// a longer one (a dashboard gauge widget's own formatted value, e.g.
+// "23.6GiB", or a custom display.format string) badly overflows and
+// overlaps the ring at the same constant. Caught live twice: the first
+// fix (an 0.8-of-diameter, 0.55em/char estimate) still wasn't aggressive
+// enough — it measured against the full diameter, not the ring's own
+// inner diameter (diameter minus the stroke on both sides, where the
+// text actually has to fit), and underestimated how wide a bold digit
+// actually renders. This version fits against the inner circle, with a
+// tighter per-character estimate tuned for Bold().
+func centerLabelFontSize(diameter float32, label string) float32 {
+	n := float32(len([]rune(label)))
+	if n <= 3 {
+		return diameter * 0.22
+	}
+	inner := diameter * 0.7 // stroke is diameter*0.15 on each side (pressureGauge)
+	size := (inner * 0.75) / (n * 0.62)
+	return max(size, 9)
 }
 
 // buildArc approximates a circular arc from startDeg, sweeping sweepDeg
@@ -172,9 +169,4 @@ func buildArc(cx, cy, r float32, startDeg, sweepDeg float64) *ui.Path {
 		x0, y0, theta = x3, y3, theta2
 	}
 	return path
-}
-
-// percentLabel formats a percent-unit value for a gauge's center label.
-func percentLabel(v float64) string {
-	return fmt.Sprintf("%.0f%%", v)
 }
