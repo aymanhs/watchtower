@@ -81,6 +81,33 @@ func TestMatchLabel(t *testing.T) {
 	}
 }
 
+func TestBarLabel(t *testing.T) {
+	mv := state.MeasurementView{Key: "used_percent"}
+
+	// Instance (e.g. a disk's mount point) wins over the measurement's
+	// own generic label — the whole point of a bars widget.
+	withInstance := resolvedSeries{ref: dashboard.SeriesRef{}, match: dashboard.Match{Server: "jumpbox", Instance: "root", Measurement: mv}}
+	if got := barLabel(withInstance, false); got != "root" {
+		t.Errorf("got %q, want root (the instance)", got)
+	}
+	if got := barLabel(withInstance, true); got != "jumpbox: root" {
+		t.Errorf("got %q, want jumpbox: root (server-qualified)", got)
+	}
+
+	// No instance: falls back to the measurement's own label, same as
+	// matchLabel.
+	noInstance := resolvedSeries{ref: dashboard.SeriesRef{}, match: dashboard.Match{Server: "jumpbox", Measurement: mv}}
+	if got := barLabel(noInstance, false); got != "used_percent" {
+		t.Errorf("got %q, want used_percent (DisplayLabel fallback)", got)
+	}
+
+	// ref.Label still wins outright over the instance.
+	withOverride := resolvedSeries{ref: dashboard.SeriesRef{Label: "Volume"}, match: dashboard.Match{Server: "jumpbox", Instance: "root", Measurement: mv}}
+	if got := barLabel(withOverride, false); got != "Volume" {
+		t.Errorf("got %q, want the ref's own Label override: Volume", got)
+	}
+}
+
 func TestAvailableSeries(t *testing.T) {
 	all := []state.ServerView{
 		{Name: "jumpbox", Metrics: []state.MetricView{
@@ -104,6 +131,34 @@ func TestAvailableSeries(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestDefaultSeriesPick(t *testing.T) {
+	all := []state.ServerView{
+		{Name: "jumpbox", Metrics: []state.MetricView{
+			{Name: "disk", Measurements: []state.MeasurementView{
+				{Key: "root.total", Unit: "bytes"},
+				{Key: "root.used_percent", Unit: "percent"},
+			}},
+		}},
+	}
+	options := availableSeries(all) // sorted: "total" sorts before "used_percent" alphabetically
+	if options[0] != "jumpbox/disk.root.total" {
+		t.Fatalf("test fixture assumption broken: options[0] = %q, want jumpbox/disk.root.total", options[0])
+	}
+
+	if got := defaultSeriesPick(options, all, dashboard.WidgetBars); got != "jumpbox/disk.root.used_percent" {
+		t.Errorf("bars: got %q, want the percent-scaled option even though it doesn't sort first", got)
+	}
+	if got := defaultSeriesPick(options, all, dashboard.WidgetGauge); got != "jumpbox/disk.root.used_percent" {
+		t.Errorf("gauge: got %q, want the percent-scaled option", got)
+	}
+	if got := defaultSeriesPick(options, all, dashboard.WidgetNumber); got != options[0] {
+		t.Errorf("number: got %q, want the plain first option %q (no percent preference)", got, options[0])
+	}
+	if got := defaultSeriesPick(nil, all, dashboard.WidgetBars); got != "" {
+		t.Errorf("got %q, want \"\" for no options at all", got)
 	}
 }
 

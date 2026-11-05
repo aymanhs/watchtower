@@ -88,10 +88,11 @@ func (t *MetricTask) Run(ctx context.Context) error {
 		// ruleKey is what event rules and zone derivation are actually
 		// declared against — baseKey for a resolved measurement (the
 		// static case: baseKey == measurement; the per-instance case:
-		// baseKey is the declared suffix, e.g. "used_percent" for a
-		// "root_used_percent"). measurement itself stays the per-alarm
-		// identity either way, so "disk.root" and "disk.data" alarm
-		// independently instead of sharing one ambiguous state.
+		// baseKey is the declared key after the last ".", e.g.
+		// "used_percent" for "root.used_percent"). measurement itself
+		// stays the per-alarm identity either way, so "disk.root" and
+		// "disk.data" alarm independently instead of sharing one
+		// ambiguous state.
 		ruleKey := measurement
 		if ok {
 			ruleKey = baseKey
@@ -129,9 +130,12 @@ func (t *MetricTask) Run(ctx context.Context) error {
 				// max_ref: total means "this instance's own total", not
 				// a single global one shared across every volume —
 				// qualify it the same way the collector itself named
-				// this instance's sibling measurements.
+				// this instance's sibling measurements: instance+"."+key,
+				// matching rawValues' own keys (built straight from
+				// o.Metric, so already in whatever dotted shape the
+				// collector actually emitted).
 				scoped := *scaleCfg
-				scoped.MaxRef = instance + "_" + scoped.MaxRef
+				scoped.MaxRef = instance + "." + scoped.MaxRef
 				scaleCfg = &scoped
 			}
 			scale, err := state.ResolveScale(scaleCfg, rawValues)

@@ -178,17 +178,20 @@ type Definition struct {
 // collector can legitimately emit without it being individually declared
 // (disk.yaml's per-volume stats: one declared "used_percent" measurement,
 // a collector that discovers real volumes at runtime and emits
-// "root_used_percent", "data_used_percent", ... — baseKey is "used_percent"
-// (what Display/Scale/events were actually declared against), instance is
-// "root"/"data" (everything before the matched "_<baseKey>" suffix). ok
-// is false only when neither resolves.
+// "root.used_percent", "data.used_percent", ... — baseKey is
+// "used_percent" (what Display/Scale/events were actually declared
+// against), instance is "root"/"data" (everything before the last "."),
+// so an instance name is free to contain its own dots without breaking
+// this, including one not even in d.Metrics). ok is false only when
+// neither resolves.
 func (d *Definition) ResolveMeasurement(name string) (m Measurement, baseKey, instance string, ok bool) {
 	if m, ok := d.Metrics[name]; ok {
 		return m, name, "", true
 	}
-	for key, m := range d.Metrics {
-		if suffix := "_" + key; strings.HasSuffix(name, suffix) {
-			return m, key, strings.TrimSuffix(name, suffix), true
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		inst, key := name[:i], name[i+1:]
+		if m, ok := d.Metrics[key]; ok && inst != "" {
+			return m, key, inst, true
 		}
 	}
 	return Measurement{}, "", "", false

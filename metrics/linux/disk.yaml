@@ -11,15 +11,16 @@ timeout: 5s
 collector:
   type: shell
   # No config: every real mounted filesystem is discovered each cycle —
-  # no per-server path to set. Each measurement key is instance-prefixed
-  # with its mount point, sanitized so "/" (which internal/storage and
-  # this engine's own "server/metric.measurement" naming both use as a
-  # separator) can't collide with it: "/" -> "root", "/data" -> "data",
-  # "/var/log" -> "var_log" (leading slash stripped, the rest "_"-joined).
-  # One declared "total"/"used"/"free"/"used_percent" below applies to
-  # however many volumes a host actually has — see
-  # metric.Definition.ResolveMeasurement for how a measurement like
-  # "root_used" resolves against the single declared "used".
+  # no per-server path to set. Each measurement key is instance-qualified
+  # with its mount point as a leading dot-segment: "root.used_percent",
+  # "data.used_percent" — metric.Definition.ResolveMeasurement splits on
+  # the *last* "." to resolve one declared "used_percent" against however
+  # many volumes a host actually has, so the mount-point segment itself
+  # is sanitized to never contain a "." (nor "/", which this engine's own
+  # "server/metric.measurement" naming also uses as a separator):
+  # "/" -> "root", "/data" -> "data", "/var/log" -> "var_log" (leading
+  # slash stripped, the rest "_"-joined, any literal "." also "_"-joined
+  # — e.g. a hypothetical "/mnt/v1.2" -> "mnt_v1_2").
   command: |
     df -B1 --output=target,size,used,avail,fstype >/dev/null 2>&1 || exit 1
     df -B1 --output=target,size,used,avail,fstype 2>/dev/null | awk '
@@ -33,12 +34,13 @@ collector:
           name = mount
           sub(/^\//, "", name)
           gsub(/\//, "_", name)
+          gsub(/\./, "_", name)
         }
         size = $2; used = $3; avail = $4
-        print name "_total=" size
-        print name "_used=" used
-        print name "_free=" avail
-        if (size > 0) print name "_used_percent=" (used / size * 100)
+        print name ".total=" size
+        print name ".used=" used
+        print name ".free=" avail
+        if (size > 0) print name ".used_percent=" (used / size * 100)
       }'
 metrics:
   total:

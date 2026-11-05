@@ -152,16 +152,16 @@ func TestMetricTask_ResolvesDisplayIntoStore(t *testing.T) {
 
 // TestMetricTask_PerInstanceMeasurements reproduces disk.yaml's per-volume
 // shape live, through the real Run path: a collector that discovers its
-// own instances at runtime and emits them instance-prefixed
-// ("root_total"/"root_used"/..., "data_total"/"data_used"/...) against
+// own instances at runtime and emits them instance-qualified
+// ("root.total"/"root.used"/..., "data.total"/"data.used"/...) against
 // one statically-declared "total"/"used"/"used_percent" schema.
 func TestMetricTask_PerInstanceMeasurements(t *testing.T) {
 	store := state.NewStore()
 	task := &MetricTask{
 		ServerName: "s1",
 		Def:        diskDef(),
-		Client: fakeRunner{out: "root_total=1000\nroot_used=500\nroot_used_percent=50\n" +
-			"data_total=2000\ndata_used=1900\ndata_used_percent=95\n"},
+		Client: fakeRunner{out: "root.total=1000\nroot.used=500\nroot.used_percent=50\n" +
+			"data.total=2000\ndata.used=1900\ndata.used_percent=95\n"},
 		CollectInterval: 10 * time.Second,
 		Deadline:        5 * time.Second,
 		Events:          event.NewEngine(0),
@@ -178,30 +178,30 @@ func TestMetricTask_PerInstanceMeasurements(t *testing.T) {
 		byKey[m.Key] = m
 	}
 
-	rootUsed := byKey["root_used"]
+	rootUsed := byKey["root.used"]
 	if rootUsed.Scale == nil || rootUsed.Scale.Max != 1000 {
-		t.Fatalf("root_used.Scale = %+v, want max_ref 'total' resolved against root's own total (1000), not data's (2000)", rootUsed.Scale)
+		t.Fatalf("root.used.Scale = %+v, want max_ref 'total' resolved against root's own total (1000), not data's (2000)", rootUsed.Scale)
 	}
-	dataUsed := byKey["data_used"]
+	dataUsed := byKey["data.used"]
 	if dataUsed.Scale == nil || dataUsed.Scale.Max != 2000 {
-		t.Fatalf("data_used.Scale = %+v, want max_ref 'total' resolved against data's own total (2000)", dataUsed.Scale)
+		t.Fatalf("data.used.Scale = %+v, want max_ref 'total' resolved against data's own total (2000)", dataUsed.Scale)
 	}
 
-	rootPct := byKey["root_used_percent"]
+	rootPct := byKey["root.used_percent"]
 	if rootPct.DisplayLabel() != "Disk Usage (root)" {
-		t.Errorf("root_used_percent.DisplayLabel() = %q, want %q (instance-annotated)", rootPct.DisplayLabel(), "Disk Usage (root)")
+		t.Errorf("root.used_percent.DisplayLabel() = %q, want %q (instance-annotated)", rootPct.DisplayLabel(), "Disk Usage (root)")
 	}
-	dataPct := byKey["data_used_percent"]
+	dataPct := byKey["data.used_percent"]
 	if dataPct.DisplayLabel() != "Disk Usage (data)" {
-		t.Errorf("data_used_percent.DisplayLabel() = %q, want %q", dataPct.DisplayLabel(), "Disk Usage (data)")
+		t.Errorf("data.used_percent.DisplayLabel() = %q, want %q", dataPct.DisplayLabel(), "Disk Usage (data)")
 	}
 
 	// root at 50% and data at 95% must alarm independently — data alone
 	// crosses both thresholds, root crosses neither.
-	if sev := task.Events.CurrentSeverity("s1", "disk.root_used_percent"); sev != "" {
+	if sev := task.Events.CurrentSeverity("s1", "disk.root.used_percent"); sev != "" {
 		t.Errorf("root severity = %q, want \"\" (50%% breaches nothing)", sev)
 	}
-	if sev := task.Events.CurrentSeverity("s1", "disk.data_used_percent"); sev != metric.SeverityCritical {
+	if sev := task.Events.CurrentSeverity("s1", "disk.data.used_percent"); sev != metric.SeverityCritical {
 		t.Errorf("data severity = %q, want critical (95%% breaches the shared used_percent rule)", sev)
 	}
 }

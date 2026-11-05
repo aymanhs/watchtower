@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"sort"
+	"strings"
 
 	"aymanhs/watchtower/internal/selector"
 	"aymanhs/watchtower/internal/state"
@@ -16,7 +17,17 @@ type Match struct {
 	Cluster      string
 	Metric       string
 	MetricStatus state.Status
-	Measurement  state.MeasurementView // Key is the raw measurement key, e.g. "root_used_percent"
+	Measurement  state.MeasurementView // Key is the raw measurement key, e.g. "root.used_percent"
+
+	// Instance is the per-instance qualifier this match's measurement
+	// decomposes to — e.g. "root" for disk's "root.used_percent" — "" if
+	// the measurement isn't per-instance at all, or matched without
+	// needing to decompose one (a selector with no instance segment
+	// matches instance-agnostically; see SeriesRef.Resolve). A
+	// presentation wanting to tell several matches apart by something
+	// more concrete than the measurement's own label (a dashboard bars
+	// widget labeling each bar by mount point, say) reads this.
+	Instance string
 
 	// HistoryKey is this match's internal/storage history key —
 	// Server+"/"+Metric+"."+Measurement.Key, exactly storage's own
@@ -36,12 +47,13 @@ type Match struct {
 // as a selector that parses fine but simply isn't reporting yet.
 //
 // A measurement whose raw key follows metric.Definition.ResolveMeasurement's
-// per-instance suffix convention ("root_used_percent" decomposing to
-// baseKey "used_percent", instance "root") is tried against every
-// underscore-split position as a candidate (instance, baseKey) pair, in
-// addition to the plain no-instance candidate — this package has no
-// metric.Registry to ask which suffix a definition actually declared, so
-// "did any plausible split satisfy the selector" stands in for it. That
+// per-instance convention ("root.used_percent" decomposing to baseKey
+// "used_percent", instance "root", split at the last ".") is tried as
+// that (instance, baseKey) candidate, in addition to the plain
+// no-instance candidate (the raw key matched as-is) — this package has
+// no metric.Registry to confirm "used_percent" is actually a declared
+// key, so it doesn't need to: the selector itself only cares whether its
+// own measurement pattern matches whatever baseKey this produces. That
 // keeps a selector's instance segment (e.g. "disk/disk.*.used_percent")
 // working against real per-instance measurements without this
 // presentation-level package needing to know anything about collectors
@@ -55,7 +67,8 @@ func (ref SeriesRef) Resolve(servers []state.ServerView) []Match {
 	for _, sv := range servers {
 		for _, m := range sv.Metrics {
 			for _, meas := range m.Measurements {
-				if !matchesAnySplit(sel, sv, m, meas) {
+				instance, ok := matchesAnySplit(sel, sv, m, meas)
+				if !ok {
 					continue
 				}
 				out = append(out, Match{
@@ -64,6 +77,7 @@ func (ref SeriesRef) Resolve(servers []state.ServerView) []Match {
 					Metric:       m.Name,
 					MetricStatus: m.Status,
 					Measurement:  meas,
+					Instance:     instance,
 					HistoryKey:   sv.Name + "/" + m.Name + "." + meas.Key,
 				})
 			}
@@ -94,27 +108,24 @@ func ResolveWidget(w Widget, servers []state.ServerView) []Match {
 	return out
 }
 
-// matchesAnySplit reports whether (sv, m, meas) satisfies sel, trying
-// the plain no-instance candidate first, then every underscore-split
-// position of meas.Key as an (instance, baseKey) candidate.
-func matchesAnySplit(sel selector.Selector, sv state.ServerView, m state.MetricView, meas state.MeasurementView) bool {
+// matchesAnySplit reports whether (sv, m, meas) satisfies sel, trying the
+// plain no-instance candidate first (meas.Key matched as-is), then —
+// mirroring metric.Definition.ResolveMeasurement — the split at meas.Key's
+// last "." as an (instance, baseKey) candidate, if it has one. Returns
+// whichever instance (if any) made it match, "" for the no-instance case.
+func matchesAnySplit(sel selector.Selector, sv state.ServerView, m state.MetricView, meas state.MeasurementView) (instance string, ok bool) {
 	base := selector.Candidate{Server: sv.Name, Cluster: sv.Cluster, Metric: m.Name, Measurement: meas.Key}
 	if sel.Match(base) {
-		return true
+		return "", true
 	}
-	key := meas.Key
-	for i := 0; i < len(key); i++ {
-		if key[i] != '_' {
-			continue
-		}
-		instance, baseKey := key[:i], key[i+1:]
-		if instance == "" || baseKey == "" {
-			continue
-		}
-		cand := selector.Candidate{Server: sv.Name, Cluster: sv.Cluster, Metric: m.Name, Instance: instance, Measurement: baseKey}
-		if sel.Match(cand) {
-			return true
+	if i := strings.LastIndexByte(meas.Key, '.'); i >= 0 {
+		inst, baseKey := meas.Key[:i], meas.Key[i+1:]
+		if inst != "" && baseKey != "" {
+			cand := selector.Candidate{Server: sv.Name, Cluster: sv.Cluster, Metric: m.Name, Instance: inst, Measurement: baseKey}
+			if sel.Match(cand) {
+				return inst, true
+			}
 		}
 	}
-	return false
+	return "", false
 }

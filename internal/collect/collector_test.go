@@ -102,26 +102,26 @@ func TestExecute_MissingMeasurementSkippedNotZero(t *testing.T) {
 // TestExecute_ResolvesPerInstanceMeasurements reproduces disk.yaml's
 // per-volume shape: one declared "total"/"used" pair, a collector that
 // discovers its own instances at runtime (df over however many real
-// mounts exist) and emits them instance-prefixed ("root_total",
-// "data_used") rather than under the declared keys literally.
+// mounts exist) and emits them instance-qualified ("root.total",
+// "data.used") rather than under the declared keys literally.
 func TestExecute_ResolvesPerInstanceMeasurements(t *testing.T) {
 	def := testDef()
-	runner := fakeRunner{out: "root_used=100\nroot_free=200\ndata_used=300\nunrelated_noise=1\n"}
+	runner := fakeRunner{out: "root.used=100\nroot.free=200\ndata.used=300\nunrelated_noise=1\n"}
 	obs, err := Execute(context.Background(), runner, "server1", def, 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(obs) != 3 {
-		t.Fatalf("got %d observations, want 3 (root_used, root_free, data_used — unrelated_noise ignored)", len(obs))
+		t.Fatalf("got %d observations, want 3 (root.used, root.free, data.used — unrelated_noise ignored)", len(obs))
 	}
 	byName := map[string]float64{}
 	for _, o := range obs {
 		byName[o.FullName()] = o.Value
 	}
 	for name, want := range map[string]float64{
-		"server1/memory.root_used": 100,
-		"server1/memory.root_free": 200,
-		"server1/memory.data_used": 300,
+		"server1/memory.root.used": 100,
+		"server1/memory.root.free": 200,
+		"server1/memory.data.used": 300,
 	} {
 		if byName[name] != want {
 			t.Errorf("%s = %v, want %v", name, byName[name], want)

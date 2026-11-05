@@ -25,6 +25,7 @@ func TestWidget_Validate(t *testing.T) {
 		// statically rejected here — the "needs 2+ slices" check moves
 		// to the resolver.
 		{"pie with one series no longer statically rejected", Widget{Type: WidgetPie, Series: []SeriesRef{{Selector: "jumpbox/docker.containers_running"}}}, false},
+		{"bars with wildcard selector ok", Widget{Type: WidgetBars, Series: []SeriesRef{{Selector: "jumpbox/disk.*.used_percent"}}}, false},
 		{"unknown type", Widget{Type: "sparkline", Series: []SeriesRef{{Selector: "jumpbox/cpu.load1"}}}, true},
 		{"series with unparseable selector", Widget{Type: WidgetChart, Series: []SeriesRef{{Selector: "jumpbox-cpu"}}}, true},
 		{"series with empty selector", Widget{Type: WidgetChart, Series: []SeriesRef{{}}}, true},
@@ -51,6 +52,7 @@ func TestWidget_EffectiveSpan(t *testing.T) {
 		want int
 	}{
 		{Widget{Type: WidgetChart}, 2},          // unset: chart's own default
+		{Widget{Type: WidgetBars}, 2},           // unset: bars' own default, same reasoning as chart
 		{Widget{Type: WidgetGauge}, 1},          // unset: everything else's default
 		{Widget{Type: WidgetChart, Span: 1}, 1}, // explicit override, smaller
 		{Widget{Type: WidgetGauge, Span: 2}, 2}, // explicit override, bigger

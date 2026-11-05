@@ -42,8 +42,8 @@ func serversFixture() []state.ServerView {
 			Name: "disk-server",
 			Metrics: []state.MetricView{
 				{Name: "disk", Status: state.StatusOK, Measurements: []state.MeasurementView{
-					{Key: "root_used_percent", Value: 60},
-					{Key: "data_used_percent", Value: 70},
+					{Key: "root.used_percent", Value: 60},
+					{Key: "data.used_percent", Value: 70},
 				}},
 			},
 		},
@@ -58,6 +58,9 @@ func TestResolve_FixedServer(t *testing.T) {
 	}
 	if got[0].HistoryKey != "jumpbox/cpu.usage" {
 		t.Errorf("HistoryKey = %q, want jumpbox/cpu.usage", got[0].HistoryKey)
+	}
+	if got[0].Instance != "" {
+		t.Errorf("Instance = %q, want \"\" for a non-per-instance measurement", got[0].Instance)
 	}
 }
 
@@ -84,13 +87,19 @@ func TestResolve_Cluster(t *testing.T) {
 	}
 }
 
-func TestResolve_InstanceWildcardAgainstSuffixConvention(t *testing.T) {
+func TestResolve_InstanceWildcardAgainstDottedConvention(t *testing.T) {
 	ref := SeriesRef{Selector: "disk-server/disk.*.used_percent"}
 	got := ref.Resolve(serversFixture())
 	if len(got) != 2 {
-		t.Fatalf("got %d matches, want 2 (root_used_percent, data_used_percent)", len(got))
+		t.Fatalf("got %d matches, want 2 (root.used_percent, data.used_percent)", len(got))
 	}
-	wantKeys := []string{"data_used_percent", "root_used_percent"} // sorted by Measurement.Key
+	wantInstances := []string{"data", "root"} // sorted by Measurement.Key (data.* before root.*)
+	for i, inst := range wantInstances {
+		if got[i].Instance != inst {
+			t.Errorf("got[%d].Instance = %q, want %q", i, got[i].Instance, inst)
+		}
+	}
+	wantKeys := []string{"data.used_percent", "root.used_percent"} // sorted by Measurement.Key
 	for i, k := range wantKeys {
 		if got[i].Measurement.Key != k {
 			t.Errorf("got[%d].Measurement.Key = %q, want %q", i, got[i].Measurement.Key, k)
@@ -101,8 +110,8 @@ func TestResolve_InstanceWildcardAgainstSuffixConvention(t *testing.T) {
 func TestResolve_InstanceExact(t *testing.T) {
 	ref := SeriesRef{Selector: "disk-server/disk.root.used_percent"}
 	got := ref.Resolve(serversFixture())
-	if len(got) != 1 || got[0].Measurement.Key != "root_used_percent" {
-		t.Fatalf("got %+v, want exactly root_used_percent", got)
+	if len(got) != 1 || got[0].Measurement.Key != "root.used_percent" {
+		t.Fatalf("got %+v, want exactly root.used_percent", got)
 	}
 }
 

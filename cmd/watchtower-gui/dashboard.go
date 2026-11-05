@@ -333,6 +333,8 @@ func widgetTile(c *ui.Context, d *dashboard.Dashboard, w dashboard.Widget, all [
 		gaugeTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	case dashboard.WidgetPie:
 		pieTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
+	case dashboard.WidgetBars:
+		barsTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	default: // WidgetNumber, and any future type default to a plain value
 		numberTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	}
@@ -509,6 +511,29 @@ func matchLabel(it resolvedSeries, qualify bool) string {
 	label := it.ref.Label
 	if label == "" {
 		label = it.match.Measurement.DisplayLabel()
+	}
+	if qualify {
+		return it.match.Server + ": " + label
+	}
+	return label
+}
+
+// barLabel is matchLabel's counterpart for a bars widget: it prefers
+// whatever the resolver pulled out of the metric itself
+// (dashboard.Match.Instance — a disk selector's mount point, say) over
+// the measurement's own generic label, since the whole point of several
+// bars in one widget is usually "one per instance", not "one per
+// differently-labeled measurement". ref.Label still wins outright when
+// set (an explicit override is still an override), and server
+// qualification still applies on top, same as every other widget.
+func barLabel(it resolvedSeries, qualify bool) string {
+	label := it.ref.Label
+	if label == "" {
+		if it.match.Instance != "" {
+			label = it.match.Instance
+		} else {
+			label = it.match.Measurement.DisplayLabel()
+		}
 	}
 	if qualify {
 		return it.match.Server + ": " + label
@@ -703,6 +728,91 @@ func pieTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int,
 	})
 }
 
+// barHeight/barGap/barLabelWidth/barValueWidth size a bars widget's rows
+// — fixed, not scaled by span/maximized the way a single gauge/number
+// is, since a bars widget's whole point is fitting several rows in the
+// same tile; Span/maximizing it just gives more rows room, via Scroll,
+// not bigger ones.
+const (
+	barHeight      = float32(14)
+	barGap         = float32(8)
+	barLabelWidth  = float32(90)
+	barValueWidth  = float32(60)
+	barTrackRadius = float32(3)
+)
+
+// barsTile draws one horizontal bar per resolved match — built for a
+// selector returning several measurements at once (every mount point's
+// disk.used_percent on one server, or one metric across every server a
+// wildcard/cluster selector matches), each bar labeled by barLabel
+// (preferring the resolver's own Match.Instance — a mount point, say —
+// over the measurement's generic one) and sized proportionally: against
+// the measurement's own Scale when it has one (the common case — most
+// per-instance measurements worth bar-charting, like used_percent,
+// already declare a 0-100 scale), or relative to the largest value among
+// this tile's own scale-less matches otherwise, so bars without an
+// absolute reference still show meaningful relative proportions instead
+// of all reading as either empty or full.
+func barsTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
+	t := c.Theme()
+	key := fmt.Sprintf("bars-%d", idx)
+	widgetCard(c, key, idx, w.EffectiveSpan(), widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
+		items := resolveTileSeries(w, all)
+		if len(items) == 0 {
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				ui.Text(c, "not reporting").FontSize(11).TextColor(t.TextMuted)
+			})
+			return
+		}
+		qualify := needsServerQualifier(items)
+		var maxNoScale float64
+		for _, it := range items {
+			if it.match.Measurement.Scale == nil && it.match.Measurement.Value > maxNoScale {
+				maxNoScale = it.match.Measurement.Value
+			}
+		}
+		ui.Scroll(c).Fill().Children(func() {
+			ui.Column(c).Gap(barGap).Padding(2).Children(func() {
+				for _, it := range items {
+					barRow(c, it, qualify, maxNoScale)
+				}
+			})
+		})
+	})
+}
+
+// barRow draws one bar: label, track+fill, formatted value.
+func barRow(c *ui.Context, it resolvedSeries, qualify bool, maxNoScale float64) {
+	t := c.Theme()
+	mv := it.match.Measurement
+	var frac float32
+	switch {
+	case mv.Scale != nil:
+		frac = mv.Scale.Fraction(mv.Value)
+	case maxNoScale > 0:
+		frac = float32(mv.Value / maxNoScale)
+	}
+	switch {
+	case frac < 0:
+		frac = 0
+	case frac > 1:
+		frac = 1
+	}
+	fillColor := statusColor(t, it.match.MetricStatus)
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, barLabel(it, qualify)).FontSize(10).Width(barLabelWidth).NoWrap().TextColor(t.TextMuted)
+		ui.Box(c).Grow(1).Height(barHeight).Draw(func(p *ui.Painter, r ui.Rect) {
+			p.Fill(r, t.Border, barTrackRadius)
+			if frac > 0 {
+				fill := r
+				fill.W = r.W * frac
+				p.Fill(fill, fillColor, barTrackRadius)
+			}
+		})
+		ui.Text(c, seriesValue(it.ref, mv)).FontSize(10).Width(barValueWidth).TextColor(t.Text)
+	})
+}
+
 // buildPieSlice builds one closed wedge of a pie: center, out to the
 // arc's start, along the arc, back to center — the filled shape a pie
 // slice is, unlike buildArc (gauge.go) which builds an open curve meant
@@ -892,6 +1002,33 @@ func availableSeries(all []state.ServerView) []string {
 	return out
 }
 
+// defaultSeriesPick is addWidgetModal's starting Autocomplete value: the
+// first option (in availableSeries' own sorted order) that actually
+// resolves to a percent-scaled measurement, for a widget type where
+// several matches get compared side by side in one tile (bars, several
+// gauges) — a raw byte count or a plain total doesn't compare across
+// differently-sized things the way a 0-100 percentage does, so a bars
+// widget built from whatever sorted first (often "total", alphabetically
+// ahead of "used_percent") would default to something that looks wrong
+// out of the gate. Everything else, and a widget type with no
+// percent-scaled option available at all, just gets the first option —
+// exactly the old, simpler default.
+func defaultSeriesPick(options []string, all []state.ServerView, widgetType dashboard.WidgetType) string {
+	if len(options) == 0 {
+		return ""
+	}
+	if widgetType == dashboard.WidgetBars || widgetType == dashboard.WidgetGauge {
+		for _, opt := range options {
+			for _, m := range (dashboard.SeriesRef{Selector: opt}).Resolve(all) {
+				if m.Measurement.Unit == "percent" {
+					return opt
+				}
+			}
+		}
+	}
+	return options[0]
+}
+
 func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerView, dashStore *dashboard.Store) {
 	t := c.Theme()
 	ui.Modal(c, &addWidgetOpen, func() {
@@ -905,7 +1042,7 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 			ui.Text(c, modalTitle).FontSize(13).Bold()
 
 			ui.Text(c, "Type").FontSize(11).TextColor(t.TextMuted)
-			typeOptions := []string{string(dashboard.WidgetChart), string(dashboard.WidgetGauge), string(dashboard.WidgetNumber), string(dashboard.WidgetPie)}
+			typeOptions := []string{string(dashboard.WidgetChart), string(dashboard.WidgetGauge), string(dashboard.WidgetNumber), string(dashboard.WidgetPie), string(dashboard.WidgetBars)}
 			typeSel := string(addWidgetType)
 			ui.Select(c, &typeSel, typeOptions)
 			addWidgetType = dashboard.WidgetType(typeSel)
@@ -930,16 +1067,16 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 				ui.Text(c, "nothing is reporting yet to suggest from — you can still type a selector").FontSize(10).TextColor(t.TextMuted)
 			}
 			if single {
-				if addWidgetSinglePick == "" && len(options) > 0 {
-					addWidgetSinglePick = options[0]
+				if addWidgetSinglePick == "" {
+					addWidgetSinglePick = defaultSeriesPick(options, all, addWidgetType)
 				}
 				ui.Autocomplete(c, &addWidgetSinglePick, options)
 
 				ui.Text(c, "Format (optional, e.g. %.0f, %5.2fGB, %6.2f%%)").FontSize(11).TextColor(t.TextMuted)
 				ui.TextInput(c, &addWidgetFormat)
 			} else {
-				if addWidgetNewPick == "" && len(options) > 0 {
-					addWidgetNewPick = options[0]
+				if addWidgetNewPick == "" {
+					addWidgetNewPick = defaultSeriesPick(options, all, addWidgetType)
 				}
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 					ui.Autocomplete(c, &addWidgetNewPick, options).Grow(1)

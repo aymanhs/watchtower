@@ -53,11 +53,19 @@ const (
 	// WidgetPie is a proportion-of-whole tile across 2+ measurements
 	// (e.g. docker's running/paused/stopped container counts).
 	WidgetPie WidgetType = "pie"
+	// WidgetBars is a horizontal bar per resolved match — built for a
+	// selector that returns several measurements at once and needs each
+	// one told apart by something more concrete than a repeated metric
+	// name: a selector's own resolved Match.Instance (e.g. each mount
+	// point for "jumpbox/disk.*.used_percent"), falling back to the
+	// measurement's own label, or the server name when matches span
+	// several servers — see cmd/watchtower-gui's matchLabel/barLabel.
+	WidgetBars WidgetType = "bars"
 )
 
 func (w WidgetType) valid() bool {
 	switch w {
-	case WidgetChart, WidgetGauge, WidgetNumber, WidgetPie:
+	case WidgetChart, WidgetGauge, WidgetNumber, WidgetPie, WidgetBars:
 		return true
 	default:
 		return false
@@ -124,7 +132,7 @@ type Widget struct {
 
 // defaultSpan is Span's unset (0) value resolved per type.
 func (t WidgetType) defaultSpan() int {
-	if t == WidgetChart {
+	if t == WidgetChart || t == WidgetBars {
 		return 2
 	}
 	return 1
