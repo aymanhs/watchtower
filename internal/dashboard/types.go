@@ -1,23 +1,39 @@
-// Package dashboard is a server's own, user-composed widget grid — the
-// GUI's "what do I want to look at" layer, deliberately decoupled from
-// metric.Display's "how does this one measurement render inline"
-// auto-display. A metric definition's Display block is about a sensible
-// default appearing with zero GUI config; a dashboard widget is someone
-// choosing, after the fact, to put a specific measurement (or several)
-// on a chart, gauge, number or pie tile.
+// Package dashboard is a user-composed widget grid — the GUI's "what do I
+// want to look at" layer, deliberately decoupled from metric.Display's
+// "how does this one measurement render inline" auto-display. A metric
+// definition's Display block is about a sensible default appearing with
+// zero GUI config; a dashboard widget is someone choosing, after the
+// fact, to put a specific selection of measurements on a chart, gauge,
+// number or pie tile.
 //
-// A dashboard belongs to one server — its widgets' Series name a metric
-// and measurement, never a server, because the server is already implied
-// by whichever server.Config.Dashboard they're in. This package only
-// defines and validates the shape; internal/server owns loading it as
-// part of Config and persisting edits back to that server's YAML file.
+// A Dashboard is global, not scoped to any one server: each of a widget's
+// Series names a selector (see internal/selector) — a pattern like
+// "jumpbox/mem.free_pct" (one fixed metric on one server),
+// "*/mem.free_pct" (that metric on every server) or
+// "cluster:connetic-nats/nats.connections" (every server in a cluster) —
+// rather than a bare metric+measurement pair implicitly scoped to
+// whichever server's config it used to live inside. How many concrete
+// (server, metric, measurement) tuples a selector actually resolves to
+// is live data, not something this package knows or validates; a widget
+// renderer decides how to lay out however many it gets back (one gauge,
+// or a small grid of them; one line on a chart, or several).
+//
+// This package only defines and validates a Dashboard's shape — that its
+// widgets make sense as widgets, and that each Series' selector text at
+// least parses. internal/server used to own loading a dashboard as part
+// of a server's own Config and persisting edits back to that server's
+// YAML file; that 1:1 coupling is gone (see Store in this package).
 package dashboard
 
-import "fmt"
+import (
+	"fmt"
+
+	"aymanhs/watchtower/internal/selector"
+)
 
 // WidgetType is the tile's visual shape. Purely declarative, like
 // metric.Widget — the GUI decides how to draw it, this package only
-// validates that the shape and its Series count make sense together.
+// validates that the shape makes sense.
 type WidgetType string
 
 const (
@@ -26,11 +42,13 @@ const (
 	// already does, just fed an explicit, user-picked list of series
 	// instead of "every measurement of whichever metric was clicked".
 	WidgetChart WidgetType = "chart"
-	// WidgetGauge is a single dial-style gauge — needs the one
-	// measurement it shows to already resolve a Scale from its own
-	// metric.Display (a dashboard widget doesn't invent one).
+	// WidgetGauge is a dial-style gauge — needs each measurement it
+	// shows to already resolve a Scale from its own metric.Display (a
+	// dashboard widget doesn't invent one). A selector matching several
+	// servers draws several gauges, not one.
 	WidgetGauge WidgetType = "gauge"
-	// WidgetNumber is a single plain value tile.
+	// WidgetNumber is a plain value tile — several matches draw a small
+	// grid of values rather than one.
 	WidgetNumber WidgetType = "number"
 	// WidgetPie is a proportion-of-whole tile across 2+ measurements
 	// (e.g. docker's running/paused/stopped container counts).
@@ -46,17 +64,21 @@ func (w WidgetType) valid() bool {
 	}
 }
 
-// SeriesRef points at one measurement within one of this widget's
-// server's own metrics. Metric+Measurement together are the same pair
-// internal/storage already keys history by (server.FullName() is
-// "server/metric.measurement"); a dashboard widget only ever needs the
-// metric/measurement half, the server half comes from context.
+// SeriesRef is one line in a widget's Series list: a selector pattern
+// (see internal/selector.Parse) naming whichever measurements this
+// widget wants, on whichever server(s) match it — fixed to one server,
+// a glob across several, or a whole cluster. How many concrete matches
+// that resolves to at any given moment is live data: a resolver (outside
+// this package, against a state snapshot) is what turns one SeriesRef
+// into zero or more rendered series.
 type SeriesRef struct {
-	Metric      string `yaml:"metric"`
-	Measurement string `yaml:"measurement"`
+	Selector string `yaml:"selector"`
+
 	// Label overrides the measurement's own DisplayLabel for this
-	// widget only — unset means use whatever the metric definition
-	// already calls it.
+	// series — unset means use whatever the metric definition already
+	// calls it. When a selector resolves to several matches, this is
+	// used as a prefix/template rather than a single fixed name; the
+	// renderer still needs to tell them apart (e.g. by server name).
 	Label string `yaml:"label,omitempty"`
 
 	// Format is a user-supplied printf-style format string for this
@@ -72,11 +94,19 @@ type SeriesRef struct {
 	Format string `yaml:"format,omitempty"`
 }
 
-func (s SeriesRef) valid() bool {
-	return s.Metric != "" && s.Measurement != ""
+// Parsed parses s.Selector, surfacing any error a resolver or editor UI
+// needs — Validate below already rejects an unparseable selector at save
+// time, so a caller past that point can usually ignore the error.
+func (s SeriesRef) Parsed() (selector.Selector, error) {
+	return selector.Parse(s.Selector)
 }
 
-// Widget is one tile in a server's dashboard grid.
+func (s SeriesRef) valid() bool {
+	_, err := s.Parsed()
+	return err == nil
+}
+
+// Widget is one tile in a dashboard grid.
 type Widget struct {
 	Type   WidgetType  `yaml:"type"`
 	Title  string      `yaml:"title,omitempty"`
@@ -113,37 +143,17 @@ func (w Widget) EffectiveSpan() int {
 	return w.Type.defaultSpan()
 }
 
-// minSeries is how many Series a WidgetType requires: a gauge or number
-// shows exactly one measurement, a chart wants at least one line, a pie
-// needs at least two slices to be a proportion of anything.
-func (t WidgetType) minSeries() int {
-	switch t {
-	case WidgetGauge, WidgetNumber:
-		return 1
-	case WidgetPie:
-		return 2
-	default: // WidgetChart
-		return 1
-	}
-}
-
-// maxSeries is 0 for "no limit" (chart, pie), 1 for widgets that only
-// ever show a single measurement (gauge, number).
-func (t WidgetType) maxSeries() int {
-	switch t {
-	case WidgetGauge, WidgetNumber:
-		return 1
-	default:
-		return 0
-	}
-}
-
-// Validate checks one widget's shape in isolation — it does not check
-// that its Series actually name a real metric/measurement; that's
-// resolved live against the server's current snapshot when rendered
-// (a widget referencing a metric since removed from metrics/ degrades to
-// a "not reporting" placeholder, the same spirit as a stale metric
-// keeping its last-known value instead of vanishing).
+// Validate checks one widget's shape in isolation — that its type and
+// span are sane, and that it has at least one Series whose selector text
+// at least parses. It deliberately does not check how many concrete
+// measurements each selector actually resolves to, or enforce a
+// type-specific count (a gauge used to require exactly one Series; a
+// pie, at least two) — a single selector can now expand to any number of
+// matches at render time (a glob across every server, say), so "does
+// this widget have enough to draw" is live data a resolver answers
+// against a current snapshot, the same spirit as a Series naming a
+// metric since removed from metrics/ degrading to a "not reporting"
+// placeholder instead of failing to load at all.
 func (w Widget) Validate() error {
 	if !w.Type.valid() {
 		return fmt.Errorf("dashboard widget: unknown type %q", w.Type)
@@ -151,15 +161,37 @@ func (w Widget) Validate() error {
 	if w.Span < 0 || w.Span > maxSpan {
 		return fmt.Errorf("dashboard widget %q (%s): span %d out of range (1-%d, or 0 for the type's default)", w.Title, w.Type, w.Span, maxSpan)
 	}
-	if len(w.Series) < w.Type.minSeries() {
-		return fmt.Errorf("dashboard widget %q (%s): needs at least %d series, has %d", w.Title, w.Type, w.Type.minSeries(), len(w.Series))
-	}
-	if max := w.Type.maxSeries(); max > 0 && len(w.Series) > max {
-		return fmt.Errorf("dashboard widget %q (%s): takes at most %d series, has %d", w.Title, w.Type, max, len(w.Series))
+	if len(w.Series) == 0 {
+		return fmt.Errorf("dashboard widget %q (%s): needs at least one series", w.Title, w.Type)
 	}
 	for i, s := range w.Series {
 		if !s.valid() {
-			return fmt.Errorf("dashboard widget %q (%s): series %d missing metric/measurement", w.Title, w.Type, i)
+			return fmt.Errorf("dashboard widget %q (%s): series %d: invalid selector %q", w.Title, w.Type, i, s.Selector)
+		}
+	}
+	return nil
+}
+
+// Dashboard is a named, global widget grid — independent of any one
+// server, saved and loaded as its own unit (see Store).
+type Dashboard struct {
+	Name    string   `yaml:"name"`
+	Widgets []Widget `yaml:"widgets"`
+
+	// SourceFile is set by Store (LoadStore/Save), never read from YAML —
+	// which file this Dashboard round-trips through, for diagnostics and
+	// so Save knows where to write it back.
+	SourceFile string `yaml:"-"`
+}
+
+// Validate checks Dashboard's own shape and every Widget's.
+func (d Dashboard) Validate() error {
+	if d.Name == "" {
+		return fmt.Errorf("dashboard: missing name")
+	}
+	for i, w := range d.Widgets {
+		if err := w.Validate(); err != nil {
+			return fmt.Errorf("dashboard %q: widget %d: %w", d.Name, i, err)
 		}
 	}
 	return nil

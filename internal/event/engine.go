@@ -24,12 +24,14 @@ type operationalState struct {
 // Engine evaluates observations against event rules and keeps lifecycle
 // state and a bounded history, all in memory.
 type Engine struct {
-	mu          sync.Mutex
-	thresholds  map[string]*thresholdState
-	operational map[string]*operationalState
-	history     []Event
-	maxHistory  int
-	nextID      int64
+	mu             sync.Mutex
+	thresholds     map[string]*thresholdState
+	operational    map[string]*operationalState
+	history        []Event
+	maxHistory     int
+	nextID         int64
+	listeners      map[int]func(Event)
+	nextListenerID int
 }
 
 // NewEngine returns an Engine that keeps up to maxHistory events (oldest
@@ -63,6 +65,18 @@ func (e *Engine) EvaluateThreshold(serverName string, def *metric.Definition, me
 	if len(rules) == 0 {
 		return nil
 	}
+	ev := e.evaluateThresholdLocked(serverName, def, measurement, rules, value, ts)
+	if ev != nil {
+		e.fire(*ev)
+	}
+	return ev
+}
+
+// evaluateThresholdLocked holds e.mu for the whole decision — the exact
+// body EvaluateThreshold itself used to run under its own defer'd unlock,
+// split out so EvaluateThreshold can fire listeners (OnEvent) after the
+// lock is released instead of while still held.
+func (e *Engine) evaluateThresholdLocked(serverName string, def *metric.Definition, measurement string, rules []metric.EventRule, value float64, ts time.Time) *Event {
 	key := serverName + "/" + def.Name + "." + measurement
 	metricName := def.Name + "." + measurement
 
@@ -137,6 +151,16 @@ func (e *Engine) EvaluateThreshold(serverName string, def *metric.Definition, me
 // currently failing, emitting an operational Event only on the transition
 // into or out of failure — never on every repeated failure.
 func (e *Engine) EvaluateCollectorResult(serverName, metricName string, collectErr error, ts time.Time) *Event {
+	ev := e.evaluateCollectorResultLocked(serverName, metricName, collectErr, ts)
+	if ev != nil {
+		e.fire(*ev)
+	}
+	return ev
+}
+
+// evaluateCollectorResultLocked is EvaluateCollectorResult's own former
+// body, split out for the same reason as evaluateThresholdLocked.
+func (e *Engine) evaluateCollectorResultLocked(serverName, metricName string, collectErr error, ts time.Time) *Event {
 	key := serverName + "/" + metricName
 
 	e.mu.Lock()
@@ -204,6 +228,43 @@ func (e *Engine) History() []Event {
 	out := make([]Event, len(e.history))
 	copy(out, e.history)
 	return out
+}
+
+// OnEvent registers fn to be called, outside the engine's own lock,
+// whenever EvaluateThreshold or EvaluateCollectorResult produces a
+// transition Event — the hook a presentation layer uses to react to new
+// events as they happen (a desktop notification, say) instead of diffing
+// History() on a timer. Call off to unregister.
+func (e *Engine) OnEvent(fn func(Event)) (off func()) {
+	e.mu.Lock()
+	if e.listeners == nil {
+		e.listeners = make(map[int]func(Event))
+	}
+	id := e.nextListenerID
+	e.nextListenerID++
+	e.listeners[id] = fn
+	e.mu.Unlock()
+	return func() {
+		e.mu.Lock()
+		delete(e.listeners, id)
+		e.mu.Unlock()
+	}
+}
+
+// fire runs every registered OnEvent listener with ev. Listeners are
+// snapshotted under the lock then run without it held, so a listener is
+// free to call back into the Engine (History, Acknowledge, ...) without
+// deadlocking.
+func (e *Engine) fire(ev Event) {
+	e.mu.Lock()
+	listeners := make([]func(Event), 0, len(e.listeners))
+	for _, fn := range e.listeners {
+		listeners = append(listeners, fn)
+	}
+	e.mu.Unlock()
+	for _, fn := range listeners {
+		fn(ev)
+	}
 }
 
 // Acknowledge marks the event with the given ID as acknowledged. It

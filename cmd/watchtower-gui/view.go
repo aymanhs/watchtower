@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"aymanhs/watchtower/internal/app"
+	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
@@ -22,7 +23,7 @@ import (
 // dashboard existed, rather than keeping two different "look at this
 // server" views where only one of them could show a dashboard at all —
 // resizing the window narrower no longer drops back to the old pane.
-func render(c *ui.Context, store *state.Store, events *event.Engine, shells app.Shells, history *storage.Store, servers app.Servers) {
+func render(c *ui.Context, store *state.Store, events *event.Engine, shells app.Shells, history *storage.Store, dashStore *dashboard.Store) {
 	t := c.Theme()
 	width, _ := c.Size()
 	ungrouped, clusters := groupByCluster(store.Snapshot())
@@ -37,7 +38,7 @@ func render(c *ui.Context, store *state.Store, events *event.Engine, shells app.
 			return
 		}
 
-		renderMasterDetail(c, store, events, history, servers, ungrouped, clusters, width-sidebarWidth)
+		renderMasterDetail(c, store, events, history, dashStore, ungrouped, clusters, width-sidebarWidth)
 	})
 }
 

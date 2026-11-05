@@ -1,10 +1,16 @@
-// This file is the per-server dashboard: a user-composed widget grid,
-// decoupled from metric.Display's auto-rendering (metricLine in view.go)
-// — see internal/dashboard's package doc for why the two are
-// deliberately separate. Config lives in the server's own YAML
-// (server.Config.Dashboard); add/remove here write straight back to it
-// via server.SaveDashboard, so hand-editing the file and using the GUI
-// are both just "the dashboard", never two sources of truth.
+// This file is the dashboard: a user-composed widget grid, decoupled
+// both from metric.Display's auto-rendering (metricLine in view.go) and
+// — now — from the sidebar's server selection. A dashboard lives in its
+// own YAML file (data/dashboards/, see internal/dashboard.Store), named
+// and picked independently of any one server (dashboardPicker); add/
+// remove here write straight back to it via dashStore.Save, so
+// hand-editing the file and using the GUI are both just "the dashboard",
+// never two sources of truth. A widget's Series are selector patterns
+// (internal/dashboard.SeriesRef.Resolve), so one widget can show one
+// server's one measurement, or glob across every server or a whole
+// cluster — this file only draws however many matches come back
+// (resolveTileSeries), it doesn't know or care which dashboard any of
+// them "belongs to".
 package main
 
 import (
@@ -19,7 +25,6 @@ import (
 
 	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/metric"
-	"aymanhs/watchtower/internal/server"
 	"aymanhs/watchtower/internal/state"
 	"aymanhs/watchtower/internal/storage"
 )
@@ -108,36 +113,165 @@ var (
 	// "append" vs "replace at this index".
 	editWidgetIdx = -1
 
-	// maximizedServer/maximizedIdx say which one widget, if any, is
+	// maximizedDashboard/maximizedIdx say which one widget, if any, is
 	// temporarily filling the whole pane instead of sharing the grid —
-	// index into that server's own Dashboard slice. Keyed by server too
-	// (not just an index) so switching the sidebar's selection to a
-	// different server never shows a stray maximized tile that happened
-	// to share the same index on this one.
-	maximizedServer = ""
-	maximizedIdx    = -1
+	// index into that dashboard's own Widgets slice. Keyed by dashboard
+	// name too (not just an index) so switching dashboards never shows a
+	// stray maximized tile that happened to share the same index on
+	// this one.
+	maximizedDashboard = ""
+	maximizedIdx       = -1
+
+	// selectedDashboard is which dashboard's grid is currently shown —
+	// global GUI state, same reasoning as selectedServer: one window,
+	// nowhere else for "which one is open right now" to live between
+	// frames. Independent of selectedServer entirely: picking a
+	// dashboard here no longer has anything to do with the sidebar's own
+	// selection, which is the whole point of a dashboard no longer being
+	// "the one belonging to whichever server you clicked".
+	selectedDashboard = ""
+
+	// New-dashboard modal draft state.
+	newDashboardOpen = false
+	newDashboardName = ""
+	newDashboardErr  = ""
 )
 
-// dashboardGrid renders sv's own widget grid (cfg.Dashboard, cfg may be
-// nil for a server the loader somehow has no Config for — defensive, not
-// expected) plus the "+ Add widget" tile every dashboard ends with. A
-// real ui.Grid, not a wrapping row: mygo's Grid supports ColumnSpan/
-// RowSpan (confirmed by reading ui/grid.go before relying on it), which
-// is what lets a chart tile span 2x2 cells instead of being stuck at the
-// same size as a gauge/number/pie tile.
-//
-// If one widget is maximized (maximizedServer/maximizedIdx), it alone
-// fills the pane — the rest of the grid, and the "+ Add widget" tile,
-// don't render at all until it's restored.
-func dashboardGrid(c *ui.Context, sv state.ServerView, cfg *server.Config, history *storage.Store, paneWidth float32) {
-	var widgets []dashboard.Widget
-	if cfg != nil {
-		widgets = cfg.Dashboard
+// dashboardNames is every dashboard currently in dashStore, sorted — the
+// picker's options.
+func dashboardNames(dashStore *dashboard.Store) []string {
+	var out []string
+	for _, d := range dashStore.All() {
+		out = append(out, d.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dashboardPane is the detail pane's top content: a picker for which
+// dashboard to show, independent of any server selected in the sidebar,
+// plus that dashboard's own grid. If selectedDashboard names one that no
+// longer exists (deleted from disk out from under the GUI, say) or
+// hasn't been set yet, it falls back to the first one alphabetically —
+// never silently keeps pointing at nothing when something is available.
+func dashboardPane(c *ui.Context, all []state.ServerView, dashStore *dashboard.Store, history *storage.Store, paneWidth float32) {
+	t := c.Theme()
+	names := dashboardNames(dashStore)
+	have := false
+	for _, n := range names {
+		if n == selectedDashboard {
+			have = true
+			break
+		}
+	}
+	if !have && len(names) > 0 {
+		selectedDashboard = names[0]
 	}
 
-	if maximizedServer == sv.Name && maximizedIdx >= 0 && maximizedIdx < len(widgets) {
+	ui.Column(c).Fill().Children(func() {
+		dashboardPicker(c, names, dashStore)
+		if selectedDashboard == "" {
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				ui.Text(c, "no dashboards yet — click + New to create one").FontSize(13).TextColor(t.TextMuted)
+			})
+			return
+		}
+		d := dashStore.GetOrNew(selectedDashboard)
+		dashboardGrid(c, d, all, dashStore, history, paneWidth)
+	}).Fill()
+}
+
+// dashboardPicker is the row above the grid: pick any existing
+// dashboard by name, or create a new one. Always visible, even with no
+// servers selected in the sidebar at all — a dashboard is global now,
+// not something that only makes sense once you've picked a server.
+func dashboardPicker(c *ui.Context, names []string, dashStore *dashboard.Store) {
+	t := c.Theme()
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(8, 12, 8, 12).Background(t.Surface).Children(func() {
+		ui.Text(c, "Dashboard").FontSize(11).TextColor(t.TextMuted)
+		if len(names) > 0 {
+			ui.Select(c, &selectedDashboard, names).Width(220)
+		} else {
+			ui.Text(c, "none yet").FontSize(11).TextColor(t.TextMuted).Grow(1)
+		}
+		if ui.Button(c.Key("new-dashboard"), "+ New").Clicked() {
+			newDashboardName = ""
+			newDashboardErr = ""
+			newDashboardOpen = true
+		}
+	})
+	newDashboardModal(c, dashStore)
+}
+
+func newDashboardModal(c *ui.Context, dashStore *dashboard.Store) {
+	t := c.Theme()
+	ui.Modal(c, &newDashboardOpen, func() {
+		ui.Column(c).Width(320).Background(t.Surface).Radius(8).Padding(16).Gap(10).Children(func() {
+			ui.Text(c, "New dashboard").FontSize(13).Bold()
+			ui.Text(c, "Name").FontSize(11).TextColor(t.TextMuted)
+			ui.TextInput(c, &newDashboardName)
+			if newDashboardErr != "" {
+				ui.Text(c, newDashboardErr).FontSize(11).TextColor(t.Danger)
+			}
+			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+				if ui.Button(c.Key("new-dashboard-cancel"), "Cancel").Clicked() {
+					newDashboardOpen = false
+				}
+				if ui.Button(c.Key("new-dashboard-create"), "Create").Clicked() {
+					confirmNewDashboard(dashStore)
+				}
+			})
+		})
+	})
+}
+
+// confirmNewDashboard creates an empty dashboard named newDashboardName
+// and selects it — errors (an empty name, a name already taken, a
+// rejected save) show inline in the modal instead of silently closing
+// it, same as confirmAddWidget's own errors do.
+func confirmNewDashboard(dashStore *dashboard.Store) {
+	name := strings.TrimSpace(newDashboardName)
+	if name == "" {
+		newDashboardErr = "name required"
+		return
+	}
+	if _, exists := dashStore.Get(name); exists {
+		newDashboardErr = fmt.Sprintf("a dashboard named %q already exists", name)
+		return
+	}
+	if err := dashStore.Save(&dashboard.Dashboard{Name: name}); err != nil {
+		newDashboardErr = err.Error()
+		return
+	}
+	selectedDashboard = name
+	newDashboardOpen = false
+}
+
+// dashboardGrid renders d's own widget grid plus the "+ Add widget" tile
+// every dashboard ends with. A real ui.Grid, not a wrapping row: mygo's
+// Grid supports ColumnSpan/RowSpan (confirmed by reading ui/grid.go
+// before relying on it), which is what lets a chart tile span 2x2 cells
+// instead of being stuck at the same size as a gauge/number/pie tile.
+//
+// If one widget is maximized (maximizedDashboard/maximizedIdx), it alone
+// fills the pane — the rest of the grid, and the "+ Add widget" tile,
+// don't render at all until it's restored.
+func dashboardGrid(c *ui.Context, d *dashboard.Dashboard, all []state.ServerView, dashStore *dashboard.Store, history *storage.Store, paneWidth float32) {
+	// Snapshot once per frame: a tile's own Clicked()/Drop() handling
+	// (onRemove/onReorder below) runs synchronously, in the middle of
+	// this same loop — a remove shortens d.Widgets right then, not on
+	// the next frame. Without this snapshot, every tile here would
+	// re-read the live, now-shorter d.Widgets by index as the loop kept
+	// going, running off the end of it and panicking on any removal
+	// that wasn't the very last widget. Rendering from a fixed-length
+	// copy instead means the rest of this frame finishes against the
+	// widgets as they were when it started; the removal still takes
+	// effect, just visibly on the next frame instead of mid-draw.
+	widgets := d.Widgets
+
+	if maximizedDashboard == d.Name && maximizedIdx >= 0 && maximizedIdx < len(widgets) {
 		ui.Box(c).Fill().Padding(12).Children(func() {
-			widgetTile(c, sv, cfg, widgets, maximizedIdx, history, true)
+			widgetTile(c, d, widgets[maximizedIdx], all, dashStore, maximizedIdx, history, true)
 		})
 		return
 	}
@@ -152,49 +286,55 @@ func dashboardGrid(c *ui.Context, sv state.ServerView, cfg *server.Config, histo
 	}
 	ui.Scroll(c).Fill().Padding(12).Children(func() {
 		ui.Grid(c).ColumnTracks(tracks...).Gap(gridGap).Children(func() {
-			for i := range widgets {
-				widgetTile(c, sv, cfg, widgets, i, history, false)
+			for i, w := range widgets {
+				widgetTile(c, d, w, all, dashStore, i, history, false)
 			}
 			addWidgetTile(c)
 		})
 	})
-	addWidgetModal(c, sv, cfg)
+	addWidgetModal(c, d, all, dashStore)
 }
 
 // widgetTile renders one configured widget by its type, with a small ×
-// in its header that removes it (splices widgets and calls
-// server.SaveDashboard) and a maximize/restore toggle — the only edits a
-// tile itself offers; everything else about it is set once, at add time.
-func widgetTile(c *ui.Context, sv state.ServerView, cfg *server.Config, widgets []dashboard.Widget, idx int, history *storage.Store, maximized bool) {
-	w := widgets[idx]
+// in its header that removes it (splices d.Widgets and calls
+// dashStore.Save) and a maximize/restore toggle — the only edits a tile
+// itself offers; everything else about it is set once, at add time. w
+// is dashboardGrid's own frame-start snapshot of this widget, not a
+// live re-read of d.Widgets[idx] — see dashboardGrid's own comment on
+// why that distinction is the whole fix for a remove-mid-render crash.
+// all is every server's current snapshot — a widget's Series are
+// selectors (internal/dashboard.SeriesRef.Resolve), and a selector
+// naming a glob or a cluster can match measurements on any number of
+// servers, none of them tied to this dashboard's own name.
+func widgetTile(c *ui.Context, d *dashboard.Dashboard, w dashboard.Widget, all []state.ServerView, dashStore *dashboard.Store, idx int, history *storage.Store, maximized bool) {
 	onRemove := func() {
-		if cfg == nil {
-			return
+		if idx < 0 || idx >= len(d.Widgets) {
+			return // already removed this frame by another handler — nothing to do
 		}
-		next := append(append([]dashboard.Widget(nil), widgets[:idx]...), widgets[idx+1:]...)
-		if err := server.SaveDashboard(cfg, next); err != nil {
+		d.Widgets = append(append([]dashboard.Widget(nil), d.Widgets[:idx]...), d.Widgets[idx+1:]...)
+		if err := dashStore.Save(d); err != nil {
 			log.Printf("dashboard: remove widget: %v", err)
 		}
 	}
 	onToggleMaximize := func() {
-		if maximizedServer == sv.Name && maximizedIdx == idx {
-			maximizedServer, maximizedIdx = "", -1
+		if maximizedDashboard == d.Name && maximizedIdx == idx {
+			maximizedDashboard, maximizedIdx = "", -1
 		} else {
-			maximizedServer, maximizedIdx = sv.Name, idx
+			maximizedDashboard, maximizedIdx = d.Name, idx
 		}
 	}
 	onEdit := func() { openWidgetEditor(idx, w) }
-	onReorder := func(fromIdx int) { reorderWidget(cfg, widgets, fromIdx, idx) }
+	onReorder := func(fromIdx int) { reorderWidget(dashStore, d, fromIdx, idx) }
 
 	switch w.Type {
 	case dashboard.WidgetChart:
-		chartTile(c, w, sv, history, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
+		chartTile(c, w, all, history, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	case dashboard.WidgetGauge:
-		gaugeTile(c, w, sv, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
+		gaugeTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	case dashboard.WidgetPie:
-		pieTile(c, w, sv, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
+		pieTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	default: // WidgetNumber, and any future type default to a plain value
-		numberTile(c, w, sv, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
+		numberTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	}
 }
 
@@ -204,12 +344,12 @@ func widgetTile(c *ui.Context, sv state.ServerView, cfg *server.Config, widgets 
 // range or a drop on itself — defensive, since by the time this runs the
 // drag/drop library has already confirmed a real drop happened, but idx
 // values come from a UI gesture, not a trusted source.
-func reorderWidget(cfg *server.Config, widgets []dashboard.Widget, fromIdx, toIdx int) {
-	if cfg == nil || fromIdx == toIdx ||
-		fromIdx < 0 || fromIdx >= len(widgets) || toIdx < 0 || toIdx >= len(widgets) {
+func reorderWidget(dashStore *dashboard.Store, d *dashboard.Dashboard, fromIdx, toIdx int) {
+	if fromIdx == toIdx ||
+		fromIdx < 0 || fromIdx >= len(d.Widgets) || toIdx < 0 || toIdx >= len(d.Widgets) {
 		return
 	}
-	next := append([]dashboard.Widget(nil), widgets...)
+	next := append([]dashboard.Widget(nil), d.Widgets...)
 	moved := next[fromIdx]
 	next = append(next[:fromIdx], next[fromIdx+1:]...)
 	// toIdx is where moved ends up in the final (still N-long) slice, not
@@ -218,7 +358,8 @@ func reorderWidget(cfg *server.Config, widgets []dashboard.Widget, fromIdx, toId
 	// shorter slice already lands moved at index toIdx of the result,
 	// whichever direction it moved.
 	next = append(next[:toIdx:toIdx], append([]dashboard.Widget{moved}, next[toIdx:]...)...)
-	if err := server.SaveDashboard(cfg, next); err != nil {
+	d.Widgets = next
+	if err := dashStore.Save(d); err != nil {
 		log.Printf("dashboard: reorder widget: %v", err)
 	}
 }
@@ -309,80 +450,148 @@ func widgetTitle(w dashboard.Widget) string {
 		if w.Series[0].Label != "" {
 			return w.Series[0].Label
 		}
-		return w.Series[0].Metric + "." + w.Series[0].Measurement
+		return w.Series[0].Selector
 	}
 	return string(w.Type)
 }
 
-// findMeasurement looks up one (metric, measurement) pair in sv's current
-// snapshot — a dashboard widget's series are just names, resolved fresh
-// against live data every render, same as the ad hoc chart already does;
-// a series naming a metric/measurement that doesn't currently exist
-// (removed from metrics/, or just not reporting yet) degrades to "not
-// reporting" rather than a crash or a stale guess.
-func findMeasurement(sv state.ServerView, metricName, key string) (mv state.MeasurementView, metricStatus state.Status, found bool) {
-	for _, m := range sv.Metrics {
-		if m.Name != metricName {
-			continue
-		}
-		for _, meas := range m.Measurements {
-			if meas.Key == key {
-				return meas, m.Status, true
-			}
-		}
-	}
-	return state.MeasurementView{}, state.StatusUnknown, false
+// resolvedSeries pairs one live dashboard.Match with the SeriesRef that
+// produced it — a tile needs both: the match for its value/scale/status,
+// the ref for its own Label/Format override, which internal/dashboard's
+// resolver (necessarily) doesn't carry since several matches can share
+// one ref.
+type resolvedSeries struct {
+	ref   dashboard.SeriesRef
+	match dashboard.Match
 }
 
-func numberTile(c *ui.Context, w dashboard.Widget, sv state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
+// resolveTileSeries resolves every one of w's Series against all's
+// current snapshot, flattened and paired back with whichever ref
+// produced each match — a dashboard widget's series are just selector
+// patterns, resolved fresh against live data every render, same as the
+// ad hoc chart already does. A ref matching nothing live (removed from
+// metrics/, not reporting yet, or just a selector too narrow to match
+// anything right now) simply contributes nothing, rather than a crash
+// or a stale guess — same spirit as "not reporting" always was, just
+// per-match instead of per-widget now that one ref can resolve to any
+// number of matches.
+func resolveTileSeries(w dashboard.Widget, all []state.ServerView) []resolvedSeries {
+	var out []resolvedSeries
+	for _, ref := range w.Series {
+		for _, m := range ref.Resolve(all) {
+			out = append(out, resolvedSeries{ref: ref, match: m})
+		}
+	}
+	return out
+}
+
+// needsServerQualifier reports whether items span more than one server —
+// a selector fixed to one server never needs its matches' labels
+// prefixed with that server's own name (it'd be redundant on every one
+// of them); a wildcard or cluster selector spanning several does, so
+// the several gauges/numbers/slices/lines it draws stay tellable apart.
+func needsServerQualifier(items []resolvedSeries) bool {
+	seen := make(map[string]bool, len(items))
+	for _, it := range items {
+		seen[it.match.Server] = true
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// matchLabel is one resolvedSeries' own display label: its ref's Label
+// override if it set one, else the measurement's own DisplayLabel,
+// prefixed with the server name when qualify says several servers are
+// in play together.
+func matchLabel(it resolvedSeries, qualify bool) string {
+	label := it.ref.Label
+	if label == "" {
+		label = it.match.Measurement.DisplayLabel()
+	}
+	if qualify {
+		return it.match.Server + ": " + label
+	}
+	return label
+}
+
+// singleFontSize/singleDiameter scale a tile's one visual up when it's
+// maximized or spans several cells — same numbers this file always
+// used for the N==1 case. multiFontSize/multiDiameter are deliberately
+// smaller fixed sizes for the N>1 case: a wrapping row of several
+// gauges/numbers needs each one modest enough that a handful fit
+// without a wall of dials, where a single one gets to fill the tile.
+const (
+	multiFontSize = 18.0
+	multiDiameter = 90.0
+)
+
+func numberTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("number-%d", idx)
 	span := w.EffectiveSpan()
 	widgetCard(c, key, idx, span, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
-		if len(w.Series) == 0 {
-			ui.Text(c, "no series configured").FontSize(11).TextColor(t.TextMuted)
-			return
-		}
-		ref := w.Series[0]
-		mv, _, found := findMeasurement(sv, ref.Metric, ref.Measurement)
-		fontSize := float32(40)
-		if maximized {
-			fontSize = 90
-		} else if span > 1 {
-			fontSize = 40 * float32(span)
-		}
-		ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			if !found {
+		items := resolveTileSeries(w, all)
+		switch len(items) {
+		case 0:
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 				ui.Text(c, "not reporting").FontSize(11).TextColor(t.TextMuted)
-				return
+			})
+		case 1:
+			fontSize := float32(40)
+			if maximized {
+				fontSize = 90
+			} else if span > 1 {
+				fontSize = 40 * float32(span)
 			}
-			ui.Text(c, seriesValue(ref, mv)).FontSize(fontSize).Bold()
-		})
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				ui.Text(c, seriesValue(items[0].ref, items[0].match.Measurement)).FontSize(fontSize).Bold()
+			})
+		default:
+			// Several matches (a wildcard/cluster selector): a small
+			// labeled grid instead of one big number, so "how many
+			// metrics did this selector return" draws appropriately —
+			// each value plus whatever tells it apart from the rest
+			// (needsServerQualifier: the server name, when several are
+			// in play; the measurement's own label otherwise).
+			qualify := needsServerQualifier(items)
+			ui.Scroll(c).Fill().Children(func() {
+				ui.Row(c).Wrap().Gap(10).Children(func() {
+					for _, it := range items {
+						ui.Column(c).Gap(2).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, seriesValue(it.ref, it.match.Measurement)).FontSize(multiFontSize).Bold()
+							ui.Text(c, matchLabel(it, qualify)).FontSize(9).TextColor(t.TextMuted).NoWrap()
+						})
+					}
+				})
+			})
+		}
 	})
 }
 
-func gaugeTile(c *ui.Context, w dashboard.Widget, sv state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
+func gaugeTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("gauge-%d", idx)
 	span := w.EffectiveSpan()
 	widgetCard(c, key, idx, span, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
-		if len(w.Series) == 0 {
-			ui.Text(c, "no series configured").FontSize(11).TextColor(t.TextMuted)
-			return
-		}
-		ref := w.Series[0]
-		mv, metricStatus, found := findMeasurement(sv, ref.Metric, ref.Measurement)
-		ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			switch {
-			case !found:
+		items := resolveTileSeries(w, all)
+		switch len(items) {
+		case 0:
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 				ui.Text(c, "not reporting").FontSize(11).TextColor(t.TextMuted)
-			case mv.Scale == nil:
-				// A dashboard gauge widget never invents a scale — it
-				// only shows one if the measurement's own metric.yaml
-				// display block already resolved one (same rule
-				// metricLine's own gauge/bar branch follows).
-				ui.Text(c, "no scale configured for this measurement").FontSize(11).TextColor(t.TextMuted)
-			default:
+			})
+		case 1:
+			mv := items[0].match.Measurement
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				if mv.Scale == nil {
+					// A dashboard gauge widget never invents a scale — it
+					// only shows one if the measurement's own metric.yaml
+					// display block already resolved one (same rule
+					// metricLine's own gauge/bar branch follows).
+					ui.Text(c, "no scale configured for this measurement").FontSize(11).TextColor(t.TextMuted)
+					return
+				}
 				// Base diameter fills most of a 1x1 tile's own body
 				// (tileHeight minus the header and padding) instead of
 				// leaving a ring of empty space around a small dial —
@@ -397,17 +606,38 @@ func gaugeTile(c *ui.Context, w dashboard.Widget, sv state.ServerView, idx int, 
 				case span > 1:
 					diameter = 140 * float32(span)
 				}
-				pressureGauge(c, *mv.Scale, mv.Value, mv.Zones, statusColor(t, metricStatus), diameter, seriesValue(ref, mv))
-			}
-		})
+				pressureGauge(c, *mv.Scale, mv.Value, mv.Zones, statusColor(t, items[0].match.MetricStatus), diameter, seriesValue(items[0].ref, mv))
+			})
+		default:
+			qualify := needsServerQualifier(items)
+			ui.Scroll(c).Fill().Children(func() {
+				ui.Row(c).Wrap().Gap(16).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+					for _, it := range items {
+						mv := it.match.Measurement
+						ui.Column(c).Gap(4).AlignItems(ui.Center).Children(func() {
+							if mv.Scale == nil {
+								ui.Box(c).Size(multiDiameter, multiDiameter).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+									ui.Text(c, "no scale").FontSize(9).TextColor(t.TextMuted)
+								})
+							} else {
+								pressureGauge(c, *mv.Scale, mv.Value, mv.Zones, statusColor(t, it.match.MetricStatus), multiDiameter, seriesValue(it.ref, mv))
+							}
+							ui.Text(c, matchLabel(it, qualify)).FontSize(9).TextColor(t.TextMuted).NoWrap()
+						})
+					}
+				})
+			})
+		}
 	})
 }
 
-func pieTile(c *ui.Context, w dashboard.Widget, sv state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
+func pieTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("pie-%d", idx)
 	span := w.EffectiveSpan()
 	widgetCard(c, key, idx, span, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
+		items := resolveTileSeries(w, all)
+		qualify := needsServerQualifier(items)
 		colors := seriesColors(t)
 		type slice struct {
 			label     string
@@ -417,17 +647,14 @@ func pieTile(c *ui.Context, w dashboard.Widget, sv state.ServerView, idx int, ma
 		}
 		var slices []slice
 		var total float64
-		for i, ref := range w.Series {
-			mv, _, found := findMeasurement(sv, ref.Metric, ref.Measurement)
-			if !found || mv.Value <= 0 {
+		for i, it := range items {
+			mv := it.match.Measurement
+			if mv.Value <= 0 {
 				continue
 			}
-			label := ref.Label
-			if label == "" {
-				label = mv.DisplayLabel()
-			}
-			formatted := seriesValue(ref, mv)
-			if ref.Format == "" {
+			label := matchLabel(it, qualify)
+			formatted := seriesValue(it.ref, mv)
+			if it.ref.Format == "" {
 				// Default pie formatting (no ref.Format set) is plain
 				// counts, not whatever unit the measurement happens to
 				// declare — a pie slice is a share of a whole, not a
@@ -514,7 +741,7 @@ func buildPieSlice(cx, cy, r float32, startDeg, sweepDeg float64) *ui.Path {
 	return path
 }
 
-func chartTile(c *ui.Context, w dashboard.Widget, sv state.ServerView, history *storage.Store, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
+func chartTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, history *storage.Store, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("chart-%d", idx)
 	widgetCard(c, key, idx, w.EffectiveSpan(), widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
@@ -522,16 +749,19 @@ func chartTile(c *ui.Context, w dashboard.Widget, sv state.ServerView, history *
 			ui.Text(c, "no history store").FontSize(11).TextColor(t.TextMuted)
 			return
 		}
+		resolved := resolveTileSeries(w, all)
+		qualify := needsServerQualifier(resolved)
 		var items []chartItem
-		for _, ref := range w.Series {
-			mv, _, found := findMeasurement(sv, ref.Metric, ref.Measurement)
-			if !found {
-				continue
-			}
-			if ref.Label != "" {
-				mv.Label = ref.Label
-			}
-			items = append(items, chartItem{mv: mv, historyKey: sv.Name + "/" + ref.Metric + "." + ref.Measurement})
+		for _, it := range resolved {
+			mv := it.match.Measurement
+			mv.Label = matchLabel(it, qualify)
+			// HistoryKey is this match's own internal/storage key
+			// (Server+"/"+Metric+"."+Measurement.Key) — a selector
+			// resolving to several servers draws one line per match,
+			// each queried under its own server's history, not one
+			// shared key the way a literal single-server selector's
+			// always been.
+			items = append(items, chartItem{mv: mv, historyKey: it.match.HistoryKey})
 		}
 		if len(items) == 0 {
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -581,7 +811,12 @@ func resetWidgetDraft() {
 // pre-filled from w and in "edit this one in place" mode
 // (confirmAddWidget replaces index idx instead of appending) — reusing
 // one modal/one draft-state/one confirm path for both add and edit, not
-// a second editor built separately.
+// a second editor built separately. A SeriesRef's Selector is already
+// exactly the picker's own option text (seriesRefFromPick's inverse is
+// just itself now that a pick isn't qualified against "whichever
+// server's pane is open" — there is no such thing anymore), so no
+// stripping/requalifying is needed the way there was before dashboards
+// stopped being per-server.
 func openWidgetEditor(idx int, w dashboard.Widget) {
 	resetWidgetDraft()
 	editWidgetIdx = idx
@@ -590,41 +825,82 @@ func openWidgetEditor(idx int, w dashboard.Widget) {
 	addWidgetSpan = w.Span
 	single := w.Type == dashboard.WidgetGauge || w.Type == dashboard.WidgetNumber
 	if single && len(w.Series) > 0 {
-		addWidgetSinglePick = w.Series[0].Metric + "." + w.Series[0].Measurement
+		addWidgetSinglePick = w.Series[0].Selector
 		addWidgetFormat = w.Series[0].Format
 	} else {
 		for _, s := range w.Series {
-			addWidgetSeriesPicks = append(addWidgetSeriesPicks, s.Metric+"."+s.Measurement)
+			addWidgetSeriesPicks = append(addWidgetSeriesPicks, s.Selector)
 		}
 	}
 	addWidgetOpen = true
 }
 
-// availableSeries lists every "metric.measurement" pair sv is currently
-// reporting, sorted — the picker's options. Resolved from the live
-// snapshot, same as the rest of this file: a widget can only be built
-// from a measurement that actually exists right now, not guessed from
-// static YAML the GUI would otherwise need a Registry reference to read.
-func availableSeries(sv state.ServerView) []string {
+// availableSeries lists selector suggestions the picker offers, sorted:
+// a literal "server/metric.measurement" for every measurement every
+// server in all is currently reporting; a wildcard "*/metric.measurement"
+// for any (metric, measurement) pair that more than one server reports;
+// and a "cluster:name/metric.measurement" for any pair reported by at
+// least one member of a named cluster. These are suggestions for an
+// Autocomplete field, not the only selectors it'll accept — the field
+// itself takes any text, so a more specific glob (a partial server name,
+// an instance segment) or a cluster this function didn't think to
+// suggest still works, just typed by hand instead of clicked. Resolved
+// from the live snapshot, same as the rest of this file: a widget can
+// only be suggested a measurement that actually exists right now, not
+// guessed from static YAML the GUI would otherwise need a Registry
+// reference to read.
+func availableSeries(all []state.ServerView) []string {
+	seen := make(map[string]bool)
+	serversFor := make(map[string]map[string]bool)  // "metric.measurement" -> set of servers reporting it
+	clustersFor := make(map[string]map[string]bool) // "metric.measurement" -> set of clusters reporting it
 	var out []string
-	for _, mv := range sv.Metrics {
-		for _, m := range mv.Measurements {
-			out = append(out, mv.Name+"."+m.Key)
+	add := func(sel string) {
+		if !seen[sel] {
+			seen[sel] = true
+			out = append(out, sel)
+		}
+	}
+	for _, sv := range all {
+		for _, mv := range sv.Metrics {
+			for _, m := range mv.Measurements {
+				pair := mv.Name + "." + m.Key
+				if serversFor[pair] == nil {
+					serversFor[pair] = make(map[string]bool)
+				}
+				serversFor[pair][sv.Name] = true
+				if sv.Cluster != "" {
+					if clustersFor[pair] == nil {
+						clustersFor[pair] = make(map[string]bool)
+					}
+					clustersFor[pair][sv.Cluster] = true
+				}
+				add(sv.Name + "/" + pair)
+			}
+		}
+	}
+	for pair, servers := range serversFor {
+		if len(servers) > 1 {
+			add("*/" + pair)
+		}
+	}
+	for pair, clusters := range clustersFor {
+		for cluster := range clusters {
+			add("cluster:" + cluster + "/" + pair)
 		}
 	}
 	sort.Strings(out)
 	return out
 }
 
-func addWidgetModal(c *ui.Context, sv state.ServerView, cfg *server.Config) {
+func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerView, dashStore *dashboard.Store) {
 	t := c.Theme()
 	ui.Modal(c, &addWidgetOpen, func() {
-		options := availableSeries(sv)
+		options := availableSeries(all)
 
 		ui.Column(c).Width(360).Background(t.Surface).Radius(8).Padding(16).Gap(10).Children(func() {
-			modalTitle := "Add widget — " + sv.Name
+			modalTitle := "Add widget — " + d.Name
 			if editWidgetIdx >= 0 {
-				modalTitle = "Edit widget — " + sv.Name
+				modalTitle = "Edit widget — " + d.Name
 			}
 			ui.Text(c, modalTitle).FontSize(13).Bold()
 
@@ -649,22 +925,24 @@ func addWidgetModal(c *ui.Context, sv state.ServerView, cfg *server.Config) {
 
 			single := addWidgetType == dashboard.WidgetGauge || addWidgetType == dashboard.WidgetNumber
 			ui.Text(c, "Series").FontSize(11).TextColor(t.TextMuted)
+			ui.Text(c, "type or pick a suggestion — * matches anything (*/cpu.usage, cluster:name/cpu.usage)").FontSize(9).TextColor(t.TextMuted)
 			if len(options) == 0 {
-				ui.Text(c, "this server isn't reporting any measurements yet").FontSize(11).TextColor(t.TextMuted)
-			} else if single {
-				if addWidgetSinglePick == "" {
+				ui.Text(c, "nothing is reporting yet to suggest from — you can still type a selector").FontSize(10).TextColor(t.TextMuted)
+			}
+			if single {
+				if addWidgetSinglePick == "" && len(options) > 0 {
 					addWidgetSinglePick = options[0]
 				}
-				ui.Select(c, &addWidgetSinglePick, options)
+				ui.Autocomplete(c, &addWidgetSinglePick, options)
 
 				ui.Text(c, "Format (optional, e.g. %.0f, %5.2fGB, %6.2f%%)").FontSize(11).TextColor(t.TextMuted)
 				ui.TextInput(c, &addWidgetFormat)
 			} else {
-				if addWidgetNewPick == "" {
+				if addWidgetNewPick == "" && len(options) > 0 {
 					addWidgetNewPick = options[0]
 				}
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Select(c, &addWidgetNewPick, options).Grow(1)
+					ui.Autocomplete(c, &addWidgetNewPick, options).Grow(1)
 					if ui.Button(c.Key("add-series-pick"), "Add").Clicked() && addWidgetNewPick != "" {
 						addWidgetSeriesPicks = append(addWidgetSeriesPicks, addWidgetNewPick)
 					}
@@ -693,7 +971,7 @@ func addWidgetModal(c *ui.Context, sv state.ServerView, cfg *server.Config) {
 					addWidgetOpen = false
 				}
 				if ui.Button(c.Key("add-widget-confirm"), confirmLabel).Clicked() {
-					confirmAddWidget(cfg)
+					confirmAddWidget(d, dashStore)
 				}
 			})
 		})
@@ -701,25 +979,19 @@ func addWidgetModal(c *ui.Context, sv state.ServerView, cfg *server.Config) {
 }
 
 // confirmAddWidget builds a dashboard.Widget from the modal's draft
-// state, validates it, and persists it via server.SaveDashboard — errors
-// (an empty picker, a rejected save) show inline in the modal instead of
+// state, validates it, and persists it via dashStore.Save — errors (an
+// empty picker, a rejected save) show inline in the modal instead of
 // silently closing it, so a failed add is visibly a failed add.
-func confirmAddWidget(cfg *server.Config) {
-	if cfg == nil {
-		addWidgetErr = "no config for this server"
-		return
-	}
+func confirmAddWidget(d *dashboard.Dashboard, dashStore *dashboard.Store) {
 	var series []dashboard.SeriesRef
 	single := addWidgetType == dashboard.WidgetGauge || addWidgetType == dashboard.WidgetNumber
 	if single {
 		if addWidgetSinglePick != "" {
-			ref := seriesRefFromPick(addWidgetSinglePick)
-			ref.Format = addWidgetFormat
-			series = append(series, ref)
+			series = append(series, dashboard.SeriesRef{Selector: addWidgetSinglePick, Format: addWidgetFormat})
 		}
 	} else {
 		for _, p := range addWidgetSeriesPicks {
-			series = append(series, seriesRefFromPick(p))
+			series = append(series, dashboard.SeriesRef{Selector: p})
 		}
 	}
 	w := dashboard.Widget{Type: addWidgetType, Title: addWidgetTitle, Series: series, Span: addWidgetSpan}
@@ -727,24 +999,15 @@ func confirmAddWidget(cfg *server.Config) {
 		addWidgetErr = err.Error()
 		return
 	}
-	var next []dashboard.Widget
-	if editWidgetIdx >= 0 && editWidgetIdx < len(cfg.Dashboard) {
-		next = append([]dashboard.Widget(nil), cfg.Dashboard...)
-		next[editWidgetIdx] = w
+	if editWidgetIdx >= 0 && editWidgetIdx < len(d.Widgets) {
+		d.Widgets = append([]dashboard.Widget(nil), d.Widgets...)
+		d.Widgets[editWidgetIdx] = w
 	} else {
-		next = append(append([]dashboard.Widget(nil), cfg.Dashboard...), w)
+		d.Widgets = append(append([]dashboard.Widget(nil), d.Widgets...), w)
 	}
-	if err := server.SaveDashboard(cfg, next); err != nil {
+	if err := dashStore.Save(d); err != nil {
 		addWidgetErr = err.Error()
 		return
 	}
 	addWidgetOpen = false
-}
-
-// seriesRefFromPick splits one "metric.measurement" picker option back
-// into a SeriesRef — the exact inverse of availableSeries' own
-// mv.Name+"."+m.Key join.
-func seriesRefFromPick(pick string) dashboard.SeriesRef {
-	metricName, measurement, _ := strings.Cut(pick, ".")
-	return dashboard.SeriesRef{Metric: metricName, Measurement: measurement}
 }

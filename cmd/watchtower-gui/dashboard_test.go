@@ -1,51 +1,102 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"aymanhs/watchtower/internal/dashboard"
-	"aymanhs/watchtower/internal/server"
 	"aymanhs/watchtower/internal/state"
 )
 
-func TestFindMeasurement(t *testing.T) {
-	sv := state.ServerView{
-		Name: "jumpbox",
-		Metrics: []state.MetricView{
-			{Name: "cpu", Status: state.StatusWarning, Measurements: []state.MeasurementView{
-				{Key: "load1", Value: 1.5},
-				{Key: "usage", Value: 42},
-			}},
+func twoServerFixture() []state.ServerView {
+	return []state.ServerView{
+		{
+			Name: "jumpbox",
+			Metrics: []state.MetricView{
+				{Name: "cpu", Status: state.StatusWarning, Measurements: []state.MeasurementView{
+					{Key: "load1", Value: 1.5},
+					{Key: "usage", Value: 42},
+				}},
+			},
+		},
+		{
+			Name: "other-server",
+			Metrics: []state.MetricView{
+				{Name: "cpu", Status: state.StatusOK, Measurements: []state.MeasurementView{
+					{Key: "load1", Value: 2.5},
+				}},
+			},
 		},
 	}
+}
 
-	mv, status, found := findMeasurement(sv, "cpu", "load1")
-	if !found || mv.Value != 1.5 {
-		t.Fatalf("got mv=%+v found=%v, want load1=1.5 found", mv, found)
-	}
-	if status != state.StatusWarning {
-		t.Errorf("got status %v, want the metric's own status %v", status, state.StatusWarning)
+func TestResolveTileSeries(t *testing.T) {
+	all := twoServerFixture()
+
+	w := dashboard.Widget{Series: []dashboard.SeriesRef{{Selector: "jumpbox/cpu.load1"}}}
+	items := resolveTileSeries(w, all)
+	if len(items) != 1 || items[0].match.Measurement.Value != 1.5 || items[0].match.MetricStatus != state.StatusWarning {
+		t.Fatalf("got %+v, want exactly jumpbox/cpu.load1=1.5 warning", items)
 	}
 
-	if _, _, found := findMeasurement(sv, "cpu", "nonexistent"); found {
+	if items := resolveTileSeries(dashboard.Widget{Series: []dashboard.SeriesRef{{Selector: "jumpbox/cpu.nonexistent"}}}, all); len(items) != 0 {
 		t.Error("found a measurement that was never there")
 	}
-	if _, _, found := findMeasurement(sv, "nonexistent", "load1"); found {
+	if items := resolveTileSeries(dashboard.Widget{Series: []dashboard.SeriesRef{{Selector: "jumpbox/nonexistent.load1"}}}, all); len(items) != 0 {
 		t.Error("found a measurement under a metric that was never there")
+	}
+	if items := resolveTileSeries(dashboard.Widget{Series: []dashboard.SeriesRef{{Selector: "not a selector"}}}, all); len(items) != 0 {
+		t.Error("an unparseable selector must never match, not panic")
+	}
+
+	// A wildcard server pattern resolves against every server.
+	wild := resolveTileSeries(dashboard.Widget{Series: []dashboard.SeriesRef{{Selector: "*/cpu.load1"}}}, all)
+	if len(wild) != 2 {
+		t.Fatalf("got %d matches, want 2 (one per server reporting cpu.load1)", len(wild))
+	}
+}
+
+func TestNeedsServerQualifier(t *testing.T) {
+	one := []resolvedSeries{{match: dashboard.Match{Server: "jumpbox"}}}
+	if needsServerQualifier(one) {
+		t.Error("one server shouldn't need qualifying")
+	}
+	two := []resolvedSeries{{match: dashboard.Match{Server: "jumpbox"}}, {match: dashboard.Match{Server: "other-server"}}}
+	if !needsServerQualifier(two) {
+		t.Error("two distinct servers should need qualifying")
+	}
+}
+
+func TestMatchLabel(t *testing.T) {
+	mv := state.MeasurementView{Key: "load1"} // DisplayLabel falls back to Key with no Label set
+	it := resolvedSeries{ref: dashboard.SeriesRef{}, match: dashboard.Match{Server: "jumpbox", Measurement: mv}}
+	if got := matchLabel(it, false); got != "load1" {
+		t.Errorf("got %q, want load1", got)
+	}
+	if got := matchLabel(it, true); got != "jumpbox: load1" {
+		t.Errorf("got %q, want jumpbox: load1", got)
+	}
+	withLabel := resolvedSeries{ref: dashboard.SeriesRef{Label: "Load"}, match: dashboard.Match{Server: "jumpbox", Measurement: mv}}
+	if got := matchLabel(withLabel, false); got != "Load" {
+		t.Errorf("got %q, want the ref's own Label override: Load", got)
 	}
 }
 
 func TestAvailableSeries(t *testing.T) {
-	sv := state.ServerView{
-		Metrics: []state.MetricView{
+	all := []state.ServerView{
+		{Name: "jumpbox", Metrics: []state.MetricView{
 			{Name: "cpu", Measurements: []state.MeasurementView{{Key: "usage"}, {Key: "load1"}}},
 			{Name: "memory", Measurements: []state.MeasurementView{{Key: "used"}}},
-		},
+		}},
+		{Name: "other-server", Metrics: []state.MetricView{
+			{Name: "cpu", Measurements: []state.MeasurementView{{Key: "usage"}}},
+		}},
 	}
-	got := availableSeries(sv)
-	want := []string{"cpu.load1", "cpu.usage", "memory.used"} // sorted
+	got := availableSeries(all)
+	want := []string{
+		"*/cpu.usage", // reported by both servers
+		"jumpbox/cpu.load1", "jumpbox/cpu.usage", "jumpbox/memory.used",
+		"other-server/cpu.usage",
+	}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -56,10 +107,36 @@ func TestAvailableSeries(t *testing.T) {
 	}
 }
 
-func TestSeriesRefFromPick(t *testing.T) {
-	ref := seriesRefFromPick("cpu.load1")
-	if ref.Metric != "cpu" || ref.Measurement != "load1" {
-		t.Errorf("got %+v, want {cpu load1}", ref)
+func TestAvailableSeries_SuggestsCluster(t *testing.T) {
+	all := []state.ServerView{
+		{Name: "nats1", Cluster: "connetic-nats", Metrics: []state.MetricView{
+			{Name: "nats", Measurements: []state.MeasurementView{{Key: "connections"}}},
+		}},
+		{Name: "nats2", Cluster: "connetic-nats", Metrics: []state.MetricView{
+			{Name: "nats", Measurements: []state.MeasurementView{{Key: "connections"}}},
+		}},
+		{Name: "jumpbox", Metrics: []state.MetricView{ // no cluster: must not suggest one
+			{Name: "cpu", Measurements: []state.MeasurementView{{Key: "usage"}}},
+		}},
+	}
+	got := availableSeries(all)
+	wantPresent := []string{"cluster:connetic-nats/nats.connections", "*/nats.connections"}
+	for _, w := range wantPresent {
+		found := false
+		for _, g := range got {
+			if g == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("availableSeries() = %v, missing %q", got, w)
+		}
+	}
+	for _, g := range got {
+		if g == "cluster:/cpu.usage" || g == "cluster:cpu.usage" {
+			t.Errorf("suggested a cluster selector for a cluster-less server: %q", g)
+		}
 	}
 }
 
@@ -68,11 +145,11 @@ func TestWidgetTitle(t *testing.T) {
 		w    dashboard.Widget
 		want string
 	}{
-		{dashboard.Widget{Title: "My Title", Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage"}}}, "My Title"},
-		{dashboard.Widget{Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage", Label: "CPU %"}}}, "CPU %"},
-		{dashboard.Widget{Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage"}}}, "cpu.usage"},
+		{dashboard.Widget{Title: "My Title", Series: []dashboard.SeriesRef{{Selector: "jumpbox/cpu.usage"}}}, "My Title"},
+		{dashboard.Widget{Series: []dashboard.SeriesRef{{Selector: "jumpbox/cpu.usage", Label: "CPU %"}}}, "CPU %"},
+		{dashboard.Widget{Series: []dashboard.SeriesRef{{Selector: "jumpbox/cpu.usage"}}}, "jumpbox/cpu.usage"},
 		{dashboard.Widget{Type: dashboard.WidgetChart, Series: []dashboard.SeriesRef{
-			{Metric: "cpu", Measurement: "load1"}, {Metric: "cpu", Measurement: "load5"},
+			{Selector: "jumpbox/cpu.load1"}, {Selector: "jumpbox/cpu.load5"},
 		}}, "chart"},
 	}
 	for _, tc := range cases {
@@ -138,7 +215,7 @@ func TestTileSize(t *testing.T) {
 func TestOpenWidgetEditor_PrefillsDraft(t *testing.T) {
 	gauge := dashboard.Widget{
 		Type: dashboard.WidgetGauge, Title: "Mem", Span: 2,
-		Series: []dashboard.SeriesRef{{Metric: "memory", Measurement: "free", Format: "%.1f GiB"}},
+		Series: []dashboard.SeriesRef{{Selector: "jumpbox/memory.free", Format: "%.1f GiB"}},
 	}
 	openWidgetEditor(3, gauge)
 	if editWidgetIdx != 3 {
@@ -147,20 +224,20 @@ func TestOpenWidgetEditor_PrefillsDraft(t *testing.T) {
 	if addWidgetType != dashboard.WidgetGauge || addWidgetTitle != "Mem" || addWidgetSpan != 2 {
 		t.Errorf("draft = type:%v title:%q span:%d, want gauge/Mem/2", addWidgetType, addWidgetTitle, addWidgetSpan)
 	}
-	if addWidgetSinglePick != "memory.free" || addWidgetFormat != "%.1f GiB" {
-		t.Errorf("single-series draft = pick:%q format:%q, want memory.free / %%.1f GiB", addWidgetSinglePick, addWidgetFormat)
+	if addWidgetSinglePick != "jumpbox/memory.free" || addWidgetFormat != "%.1f GiB" {
+		t.Errorf("single-series draft = pick:%q format:%q, want jumpbox/memory.free / %%.1f GiB", addWidgetSinglePick, addWidgetFormat)
 	}
 
 	chart := dashboard.Widget{
 		Type: dashboard.WidgetChart,
 		Series: []dashboard.SeriesRef{
-			{Metric: "cpu", Measurement: "load1"},
-			{Metric: "cpu", Measurement: "load5"},
+			{Selector: "jumpbox/cpu.load1"},
+			{Selector: "jumpbox/cpu.load5"},
 		},
 	}
 	openWidgetEditor(0, chart)
-	if len(addWidgetSeriesPicks) != 2 || addWidgetSeriesPicks[0] != "cpu.load1" || addWidgetSeriesPicks[1] != "cpu.load5" {
-		t.Errorf("multi-series draft = %v, want [cpu.load1 cpu.load5]", addWidgetSeriesPicks)
+	if len(addWidgetSeriesPicks) != 2 || addWidgetSeriesPicks[0] != "jumpbox/cpu.load1" || addWidgetSeriesPicks[1] != "jumpbox/cpu.load5" {
+		t.Errorf("multi-series draft = %v, want [jumpbox/cpu.load1 jumpbox/cpu.load5]", addWidgetSeriesPicks)
 	}
 	if addWidgetSinglePick != "" {
 		t.Errorf("multi-series edit left a stale single-series pick: %q", addWidgetSinglePick)
@@ -177,7 +254,7 @@ func TestOpenWidgetEditor_PrefillsDraft(t *testing.T) {
 // wrong once an element is removed before being reinserted.
 func TestReorderWidget(t *testing.T) {
 	widget := func(title string) dashboard.Widget {
-		return dashboard.Widget{Type: dashboard.WidgetNumber, Title: title, Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage"}}}
+		return dashboard.Widget{Type: dashboard.WidgetNumber, Title: title, Series: []dashboard.SeriesRef{{Selector: "example/cpu.usage"}}}
 	}
 	titles := func(ws []dashboard.Widget) []string {
 		out := make([]string, len(ws))
@@ -186,44 +263,47 @@ func TestReorderWidget(t *testing.T) {
 		}
 		return out
 	}
-	newCfg := func(t *testing.T, widgets []dashboard.Widget) *server.Config {
+	newDash := func(t *testing.T, widgets []dashboard.Widget) (*dashboard.Store, *dashboard.Dashboard) {
 		t.Helper()
-		dir := t.TempDir()
-		path := filepath.Join(dir, "example.yaml")
-		if err := os.WriteFile(path, []byte("name: example\nconnection:\n  type: local\ngroups:\n  - basic\n"), 0o644); err != nil {
+		s, err := dashboard.LoadStore(t.TempDir())
+		if err != nil {
 			t.Fatal(err)
 		}
-		return &server.Config{Name: "example", SourceFile: path, Dashboard: widgets}
+		d := &dashboard.Dashboard{Name: "example", Widgets: widgets}
+		if err := s.Save(d); err != nil {
+			t.Fatal(err)
+		}
+		return s, d
 	}
 
 	t.Run("move later", func(t *testing.T) {
-		cfg := newCfg(t, []dashboard.Widget{widget("A"), widget("B"), widget("C"), widget("D")})
-		reorderWidget(cfg, cfg.Dashboard, 0, 2) // drag A onto C's spot
-		if got := titles(cfg.Dashboard); !slicesEqual(got, []string{"B", "C", "A", "D"}) {
+		s, d := newDash(t, []dashboard.Widget{widget("A"), widget("B"), widget("C"), widget("D")})
+		reorderWidget(s, d, 0, 2) // drag A onto C's spot
+		if got := titles(d.Widgets); !slicesEqual(got, []string{"B", "C", "A", "D"}) {
 			t.Fatalf("got %v, want [B C A D]", got)
 		}
 	})
 
 	t.Run("move earlier", func(t *testing.T) {
-		cfg := newCfg(t, []dashboard.Widget{widget("A"), widget("B"), widget("C"), widget("D")})
-		reorderWidget(cfg, cfg.Dashboard, 2, 0) // drag C onto A's spot
-		if got := titles(cfg.Dashboard); !slicesEqual(got, []string{"C", "A", "B", "D"}) {
+		s, d := newDash(t, []dashboard.Widget{widget("A"), widget("B"), widget("C"), widget("D")})
+		reorderWidget(s, d, 2, 0) // drag C onto A's spot
+		if got := titles(d.Widgets); !slicesEqual(got, []string{"C", "A", "B", "D"}) {
 			t.Fatalf("got %v, want [C A B D]", got)
 		}
 	})
 
 	t.Run("drop on self is a no-op", func(t *testing.T) {
-		cfg := newCfg(t, []dashboard.Widget{widget("A"), widget("B")})
-		reorderWidget(cfg, cfg.Dashboard, 1, 1)
-		if got := titles(cfg.Dashboard); !slicesEqual(got, []string{"A", "B"}) {
+		s, d := newDash(t, []dashboard.Widget{widget("A"), widget("B")})
+		reorderWidget(s, d, 1, 1)
+		if got := titles(d.Widgets); !slicesEqual(got, []string{"A", "B"}) {
 			t.Fatalf("got %v, want unchanged [A B]", got)
 		}
 	})
 
 	t.Run("out of range is a no-op", func(t *testing.T) {
-		cfg := newCfg(t, []dashboard.Widget{widget("A"), widget("B")})
-		reorderWidget(cfg, cfg.Dashboard, 5, 0)
-		if got := titles(cfg.Dashboard); !slicesEqual(got, []string{"A", "B"}) {
+		s, d := newDash(t, []dashboard.Widget{widget("A"), widget("B")})
+		reorderWidget(s, d, 5, 0)
+		if got := titles(d.Widgets); !slicesEqual(got, []string{"A", "B"}) {
 			t.Fatalf("got %v, want unchanged [A B]", got)
 		}
 	})
@@ -242,34 +322,40 @@ func slicesEqual(a, b []string) bool {
 }
 
 func TestConfirmAddWidget_EditReplacesInPlace(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "example.yaml")
-	if err := os.WriteFile(path, []byte("name: example\nconnection:\n  type: local\ngroups:\n  - basic\n"), 0o644); err != nil {
+	dashStore, err := dashboard.LoadStore(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &server.Config{Name: "example", SourceFile: path, Dashboard: []dashboard.Widget{
-		{Type: dashboard.WidgetNumber, Title: "Old", Series: []dashboard.SeriesRef{{Metric: "cpu", Measurement: "usage"}}},
-		{Type: dashboard.WidgetNumber, Title: "Keep", Series: []dashboard.SeriesRef{{Metric: "memory", Measurement: "free"}}},
+	d := &dashboard.Dashboard{Name: "example", Widgets: []dashboard.Widget{
+		{Type: dashboard.WidgetNumber, Title: "Old", Series: []dashboard.SeriesRef{{Selector: "example/cpu.usage"}}},
+		{Type: dashboard.WidgetNumber, Title: "Keep", Series: []dashboard.SeriesRef{{Selector: "example/memory.free"}}},
 	}}
+	if err := dashStore.Save(d); err != nil {
+		t.Fatal(err)
+	}
 
 	resetWidgetDraft()
 	editWidgetIdx = 0
 	addWidgetType = dashboard.WidgetNumber
 	addWidgetTitle = "New"
-	addWidgetSinglePick = "cpu.usage"
+	addWidgetSinglePick = "example/cpu.usage"
 
-	confirmAddWidget(cfg)
+	confirmAddWidget(d, dashStore)
 	if addWidgetErr != "" {
 		t.Fatalf("confirmAddWidget: %s", addWidgetErr)
 	}
-	if len(cfg.Dashboard) != 2 {
-		t.Fatalf("got %d widgets, want 2 (edit must replace, not append)", len(cfg.Dashboard))
+	got, ok := dashStore.Get("example")
+	if !ok {
+		t.Fatal("dashboard \"example\" not found in store")
 	}
-	if cfg.Dashboard[0].Title != "New" {
-		t.Errorf("widget 0 title = %q, want New", cfg.Dashboard[0].Title)
+	if len(got.Widgets) != 2 {
+		t.Fatalf("got %d widgets, want 2 (edit must replace, not append)", len(got.Widgets))
 	}
-	if cfg.Dashboard[1].Title != "Keep" {
-		t.Errorf("widget 1 title = %q, want Keep (untouched)", cfg.Dashboard[1].Title)
+	if got.Widgets[0].Title != "New" {
+		t.Errorf("widget 0 title = %q, want New", got.Widgets[0].Title)
+	}
+	if got.Widgets[1].Title != "Keep" {
+		t.Errorf("widget 1 title = %q, want Keep (untouched)", got.Widgets[1].Title)
 	}
 }
 

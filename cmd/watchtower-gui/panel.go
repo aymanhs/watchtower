@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui/chart"
 
 	"aymanhs/watchtower/internal/app"
+	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
@@ -233,7 +234,7 @@ func ensureTerminal(serverName string, shells app.Shells) {
 // what "detailed" was trying to be before several metrics per server made
 // it a wall of gauges. Selecting a different server is just a click, not
 // a scroll.
-func renderMasterDetail(c *ui.Context, store *state.Store, events *event.Engine, history *storage.Store, servers app.Servers, ungrouped []state.ServerView, clusters []clusterGroup, paneWidth float32) {
+func renderMasterDetail(c *ui.Context, store *state.Store, events *event.Engine, history *storage.Store, dashStore *dashboard.Store, ungrouped []state.ServerView, clusters []clusterGroup, paneWidth float32) {
 	all := allServers(ungrouped, clusters)
 	if selectedServer == "" || !hasServer(all, selectedServer) {
 		if len(all) > 0 {
@@ -244,7 +245,7 @@ func renderMasterDetail(c *ui.Context, store *state.Store, events *event.Engine,
 	ui.Split(c, &sidebarWidth, func() {
 		sidebar(c, ungrouped, clusters)
 	}, func() {
-		detailPane(c, events, history, servers, all, paneWidth)
+		detailPane(c, events, history, dashStore, all, paneWidth)
 	}).Fill()
 }
 
@@ -318,27 +319,30 @@ func selectableRow(c *ui.Context, sv state.ServerView) {
 	}
 }
 
-// detailPane is the right side: the selected server's own dashboard,
-// optionally split with the events/terminal panel beneath it.
-func detailPane(c *ui.Context, events *event.Engine, history *storage.Store, servers app.Servers, all []state.ServerView, paneWidth float32) {
-	t := c.Theme()
-	sv, ok := findServer(all, selectedServer)
-	if !ok {
-		ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-			ui.Text(c, "select a server").FontSize(13).TextColor(t.TextMuted)
-		})
-		return
-	}
-
-	// The detail pane's top content is always the server's own dashboard
-	// now — the per-metric list (metricLine by metricLine, what this used
-	// to show, and still what the narrower stacked tiers in view.go show,
-	// since they have no split pane to put a dashboard in) stepped back
-	// in favor of the widget grid once dashboards existed at all: there's
+// detailPane is the right side: a dashboard (any of them — dashboardPane
+// has its own picker, independent of the sidebar), optionally split with
+// the events/terminal panel beneath it. Those two bottom panels are
+// still per-server, so they need selectedServer to actually resolve to
+// one; the dashboard above them never does.
+func detailPane(c *ui.Context, events *event.Engine, history *storage.Store, dashStore *dashboard.Store, all []state.ServerView, paneWidth float32) {
+	// The detail pane's top content is always a dashboard now — the
+	// per-metric list (metricLine by metricLine, what this used to show,
+	// and still what the narrower stacked tiers in view.go show, since
+	// they have no split pane to put a dashboard in) stepped back in
+	// favor of the widget grid once dashboards existed at all: there's
 	// no reason to keep two different "look at this server" views once
 	// one of them is strictly more capable.
 	top := func() {
-		dashboardGrid(c, sv, servers[sv.Name], history, paneWidth)
+		dashboardPane(c, all, dashStore, history, paneWidth)
+	}
+
+	sv, ok := findServer(all, selectedServer)
+	if !ok {
+		// No server selected: events/terminal have nothing to show, so
+		// the dashboard just takes the whole pane rather than splitting
+		// against an empty bottom half.
+		top()
+		return
 	}
 
 	switch bottomMode {

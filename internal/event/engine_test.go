@@ -246,3 +246,29 @@ func TestHistory_BoundedByMaxHistory(t *testing.T) {
 		t.Fatalf("got %d history entries, want 2 (bounded)", len(hist))
 	}
 }
+
+func TestOnEvent(t *testing.T) {
+	e := NewEngine(0)
+	def := diskDef()
+	now := time.Now()
+
+	var got []Event
+	off := e.OnEvent(func(ev Event) { got = append(got, ev) })
+
+	// Normal -> normal fires nothing.
+	e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 50, now)
+	// Crosses warning: one listener call.
+	e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 82, now)
+	// Unchanged severity: dedup'd, no call.
+	e.EvaluateThreshold("s1", def, "used_percent", "used_percent", 83, now)
+
+	if len(got) != 1 || got[0].Kind != KindRaised || got[0].Severity != metric.SeverityWarning {
+		t.Fatalf("got %+v, want exactly one raised-warning event", got)
+	}
+
+	off()
+	e.EvaluateCollectorResult("s1", "disk", errors.New("timeout"), now)
+	if len(got) != 1 {
+		t.Fatalf("listener fired after off(): %+v", got)
+	}
+}

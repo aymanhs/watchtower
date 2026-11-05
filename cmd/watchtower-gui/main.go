@@ -15,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"aymanhs/watchtower/internal/app"
+	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/state"
@@ -29,6 +30,18 @@ const maxConcurrentCollections = 16
 const historyRetention = 30 * 24 * time.Hour
 
 func main() {
+	// SetName first — RequestSingleInstanceLock's lock is keyed by app
+	// name. Then the lock itself, before anything else starts (SSH
+	// connects, history opens, collection schedules): a second launch
+	// while one's already running should just hand off to it and exit,
+	// not duplicate every connection and pile up another tray icon next
+	// to the first (the actual "many tray icons" bug) — on both Windows
+	// and Linux, mygo's own mechanism, not anything OS-specific here.
+	mygo.App.SetName("Watchtower")
+	if !mygo.App.RequestSingleInstanceLock() {
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	events := event.NewEngine(0)
@@ -43,7 +56,16 @@ func main() {
 		log.Printf("history: initial retention sweep: %v", err)
 	}
 
-	tasks, shells, servers, err := app.Bootstrap(ctx, app.DefaultPaths, events, store, history, false /* no console printing */)
+	tasks, shells, _, err := app.Bootstrap(ctx, app.DefaultPaths, events, store, history, false /* no console printing */)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Dashboards live in their own files now, independent of server
+	// config (see internal/dashboard's package doc) — loaded here, not
+	// inside app.Bootstrap, same reason history is: a GUI-only concern
+	// the console binary has no use for at all.
+	dashStore, err := dashboard.LoadStore("data/dashboards")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -53,6 +75,11 @@ func main() {
 	})
 	go sched.Run(ctx, tasks)
 
+	// Quit can arrive from the tray menu's "Quit" (RoleQuit), the OS
+	// signal handler below, or Cmd+Q — all of them must let the window's
+	// own Close go through instead of wireTray's OnClose turning it into
+	// a Hide (see quitting in tray.go).
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:     "Watchtower",
@@ -60,7 +87,22 @@ func main() {
 			Height:    240,
 			MinWidth:  140,
 			MinHeight: 60,
-			Content:   ui.View(func(c *ui.Context) { render(c, store, events, shells, history, servers) }),
+			// Starts as a normal, visible window — only minimizing or
+			// closing it shrinks it down to the tray (wireTray's
+			// OnMinimize/OnClose), never the other way round at launch.
+			Content: ui.View(func(c *ui.Context) { render(c, store, events, shells, history, dashStore) }),
+		})
+
+		tray := wireTray(win, events)
+		mygo.App.OnWillQuit(func(*mygo.QuitEvent) { tray.Destroy() })
+
+		// A second launch (RequestSingleInstanceLock returned false
+		// there) means someone tried to start Watchtower again while
+		// it's already running — bring this one to the front rather
+		// than silently doing nothing, so it doesn't look like the
+		// second launch failed.
+		mygo.App.OnSecondInstance(func(args []string, workingDir string) {
+			win.Show()
 		})
 
 		// Collection runs on its own schedule in the background; nudge the
