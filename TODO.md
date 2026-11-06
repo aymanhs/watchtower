@@ -19,8 +19,9 @@ clusters. Historical observations power chart widgets.
   in-tile selector, draw the avg line over a min/max band per window, and
   break the line at gaps. Aggregates stay in charts; the Metrics tab shows
   raw values only. Stored rollups only if 30d queries get too slow.
-- Metrics tab: chart of selected rows (needs design so the table stays
-  uncluttered; follows aggregates so it can respect the range).
+- Metrics tab: selecting rows shows a chart of them under the table with its
+  own range selector (aggregates live only in that chart, never in the
+  table). Nothing else is queued; pick from Ideas.
 - Cleanup: investigation view phase 1 is complete. Raw collector output is
   deliberately not kept: collector failures are events whose message quotes
   a bounded excerpt of the offending output or stderr.

@@ -30,6 +30,7 @@ var (
 	metricSort         ui.SortOrder
 	metricNotice       = ""
 	metricRange        = rangeAll
+	metricChartRange   = 0 // index into dashboard.Ranges for the selected-rows chart
 )
 
 var metricStatusLabels = []string{"All", "Alerting", "Stale"}
@@ -431,37 +432,67 @@ func metricDetailsPane(c *ui.Context, all []state.ServerView, history *storage.S
 			{Title: "Collected at", Width: 150, Sortable: true},
 			{Title: "Error", Sortable: true},
 		}
-		ui.Table(c, &metricTable, columns, len(rows), func(row, col int) {
-			r := rows[row]
-			switch col {
-			case 0:
-				ui.Text(c, r.Server).FontSize(11)
-			case 1:
-				ui.Text(c, r.Metric).FontSize(11)
-			case 2:
-				ui.Text(c, r.Measurement).FontSize(11)
-			case 3:
-				ui.Text(c, r.Value).FontSize(11)
-			case 4:
-				ui.Text(c, string(r.Status)).FontSize(11).TextColor(statusColor(t, r.Status))
-			case 5:
-				ui.Text(c, ageText(r.Updated, now)).FontSize(11).TextColor(t.TextMuted)
-			case 6:
-				ui.Text(c, exactTime(r.Updated)).FontSize(11).TextColor(t.TextMuted)
-			case 7:
-				detail := r.Error
-				if detail == "" && r.Stale {
-					detail = "stale"
+		table := func() {
+			ui.Table(c, &metricTable, columns, len(rows), func(row, col int) {
+				r := rows[row]
+				switch col {
+				case 0:
+					ui.Text(c, r.Server).FontSize(11)
+				case 1:
+					ui.Text(c, r.Metric).FontSize(11)
+				case 2:
+					ui.Text(c, r.Measurement).FontSize(11)
+				case 3:
+					ui.Text(c, r.Value).FontSize(11)
+				case 4:
+					ui.Text(c, string(r.Status)).FontSize(11).TextColor(statusColor(t, r.Status))
+				case 5:
+					ui.Text(c, ageText(r.Updated, now)).FontSize(11).TextColor(t.TextMuted)
+				case 6:
+					ui.Text(c, exactTime(r.Updated)).FontSize(11).TextColor(t.TextMuted)
+				case 7:
+					detail := r.Error
+					if detail == "" && r.Stale {
+						detail = "stale"
+					}
+					ui.Text(c, detail).FontSize(11).TextColor(t.Danger)
 				}
-				ui.Text(c, detail).FontSize(11).TextColor(t.Danger)
-			}
-		}).Fill()
+			}).Fill()
+		}
+		if items := chartItemsForRows(rows, &metricChosen); len(items) > 0 {
+			ui.SplitVertical(c, &metricChartHeight, table, func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(6, 10, 0, 10).Children(func() {
+					ui.Text(c, "selected rows, aggregated over").FontSize(10).TextColor(t.TextMuted)
+					ui.Segmented(c, &metricChartRange, dashboard.Ranges...)
+				})
+				rng, _ := dashboard.RangeDuration(dashboard.Ranges[metricChartRange])
+				renderSeriesChart(c, "", items, rng).Fill()
+			}).Fill()
+		} else {
+			table()
+		}
 		stats := fmt.Sprintf("%d rows", len(rows))
 		if n := metricChosen.Len(); n > 0 {
 			stats += fmt.Sprintf(" · %d selected", n)
 		}
 		statusLine(c, stats, metricNotice)
 	})
+}
+
+// metricChartHeight is the selected-rows chart's height under the table; the
+// user drags the split to change it.
+var metricChartHeight = float32(240)
+
+// chartItemsForRows turns the selected rows into chart series, labelled by
+// their full selector so equal measurements on different servers differ.
+func chartItemsForRows(rows []metricRow, chosen *ui.Selection[string]) []chartItem {
+	var out []chartItem
+	for _, r := range rows {
+		if r.Measurement != "" && chosen.Has(r.key()) {
+			out = append(out, chartItem{label: r.selector(), historyKey: r.selector()})
+		}
+	}
+	return out
 }
 
 // statusLine is the one-row footer under a table: stats on the left, the
