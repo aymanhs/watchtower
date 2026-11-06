@@ -1,6 +1,6 @@
 // Command watchtower-gui is the native GUI presentation, built on MyGo. It
-// shares the exact same engine as cmd/watchtower (see internal/app) —
-// only this file and view.go know mygo exists.
+// runs the engine from internal/app —
+// only the cmd/watchtower-gui package knows mygo exists.
 package main
 
 import (
@@ -21,6 +21,7 @@ import (
 	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/demo"
 	"aymanhs/watchtower/internal/event"
+	"aymanhs/watchtower/internal/eventlog"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/state"
@@ -30,8 +31,7 @@ import (
 const maxConcurrentCollections = 16
 
 // historyRetention is how long charted history is kept before its
-// partition files get deleted. GUI-only for now — the console binary has
-// nothing to chart, so it doesn't open a storage.Store at all.
+// partition files get deleted.
 const historyRetention = 30 * 24 * time.Hour
 
 // initLogFile sends log output to data/watchtower.log: the Windows GUI
@@ -106,6 +106,31 @@ func run() error {
 		log.Printf("history: initial retention sweep: %v", err)
 	}
 
+	// Events persist beside metric history (same directory, same retention)
+	// so outages survive restarts; seeded before any task can evaluate.
+	evlog, err := eventlog.Open(storageDir, historyRetention)
+	if err != nil {
+		return fmt.Errorf("open event log: %w", err)
+	}
+	defer func() {
+		if err := evlog.Close(); err != nil {
+			log.Printf("event log close: %v", err)
+		}
+	}()
+	if err := evlog.ApplyRetention(); err != nil {
+		log.Printf("event log: initial retention sweep: %v", err)
+	}
+	if past, err := evlog.Load(time.Now().Add(-historyRetention)); err != nil {
+		log.Printf("event log: load: %v", err)
+	} else {
+		events.Seed(past)
+	}
+	events.OnEvent(func(ev event.Event) {
+		if err := evlog.Append(ev); err != nil {
+			log.Printf("event log: %v", err)
+		}
+	})
+
 	var (
 		tasks  []scheduler.Task
 		shells app.Shells
@@ -128,8 +153,7 @@ func run() error {
 
 	// Dashboards live in their own files now, independent of server
 	// config (see internal/dashboard's package doc) — loaded here, not
-	// inside app.Bootstrap, same reason history is: a GUI-only concern
-	// the console binary has no use for at all.
+	// inside app.Bootstrap, same reason history is: a GUI-only concern.
 	dashStore, err := dashboard.LoadStore(dashDir)
 	if err != nil {
 		return fmt.Errorf("load dashboards: %w", err)

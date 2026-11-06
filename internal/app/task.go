@@ -1,8 +1,7 @@
 // Package app wires the independent engine components (metric/group/server
 // config, SSH, scheduler, event engine, state store) into the set of
-// scheduler.Tasks a presentation layer runs. Both cmd/watchtower (console)
-// and cmd/watchtower-gui (MyGo GUI) call Bootstrap and get back the same
-// engine; only how they present the result differs.
+// scheduler.Tasks a presentation layer runs. cmd/watchtower-gui (MyGo GUI) calls Bootstrap and gets back the
+// engine; keeping it free of toolkit imports keeps it presentation-neutral.
 package app
 
 import (

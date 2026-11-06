@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"sort"
@@ -28,8 +27,12 @@ var (
 	sidebarWidth   = float32(220)
 	bottomHeight   = float32(180)
 
-	// bottomMode picks what the bottom split shows: "" (closed), "events"
-	// or "terminal" — one slot, one thing at a time, not stacked.
+	// rightTab picks what the right pane shows: tabDashboard, tabMetrics
+	// (the selected server's metric details) or tabEvents (global).
+	rightTab = tabDashboard
+
+	// bottomMode is "" (closed) or "terminal": the terminal splits under
+	// whichever tab is showing.
 	bottomMode = ""
 
 	// The terminal session, if one's been opened, independent of
@@ -76,18 +79,10 @@ func toolbar(c *ui.Context, win *mygo.Window, shells app.Shells) {
 	ui.Toolbar(c, func() {
 		ui.Text(c, "Watchtower").FontSize(12).TextColor(t.TextMuted)
 
-		eventsTooltip := "Show events"
-		if bottomMode == "events" {
-			eventsTooltip = "Hide events"
-		}
-		if ui.Button(c.Key("events-toggle"), "").Tooltip(eventsTooltip).
+		if ui.Button(c.Key("events-toggle"), "").Tooltip("Show events").
 			Children(func() { ui.Icon(c, bellIcon).FontSize(14) }).
 			Clicked() {
-			if bottomMode == "events" {
-				bottomMode = ""
-			} else {
-				bottomMode = "events"
-			}
+			rightTab = tabEvents
 		}
 
 		if ui.Button(c.Key("terminal"), "").
@@ -273,44 +268,40 @@ func selectableRow(c *ui.Context, sv state.ServerView) {
 	}
 }
 
-// detailPane is the right side: a dashboard (any of them — dashboardPane
-// has its own picker, independent of the sidebar), optionally split with
-// the events/terminal panel beneath it. Those two bottom panels are
-// still per-server, so they need selectedServer to actually resolve to
-// one; the dashboard above them never does.
+// Right pane tabs.
+const (
+	tabDashboard = iota
+	tabMetrics
+	tabEvents
+)
+
+// detailPane is the right side: a tab bar (dashboards, the selected
+// server's metric details, global events) over the tab's content,
+// optionally split with the terminal beneath it, which needs
+// selectedServer to resolve to a server.
 func detailPane(c *ui.Context, events *event.Engine, history *storage.Store, dashStore *dashboard.Store, all []state.ServerView, paneWidth float32) {
-	// The detail pane's top content is always a dashboard now — the
-	// per-metric list (metricLine by metricLine, what this used to show,
-	// and still what the narrower stacked tiers in view.go show, since
-	// they have no split pane to put a dashboard in) stepped back in
-	// favor of the widget grid once dashboards existed at all: there's
-	// no reason to keep two different "look at this server" views once
-	// one of them is strictly more capable.
 	top := func() {
-		dashboardPane(c, all, dashStore, history, paneWidth)
-	}
-
-	sv, ok := findServer(all, selectedServer)
-	if !ok {
-		// No server selected: events/terminal have nothing to show, so
-		// the dashboard just takes the whole pane rather than splitting
-		// against an empty bottom half.
-		top()
-		return
-	}
-
-	switch bottomMode {
-	case "events":
-		ui.SplitVertical(c, &bottomHeight, top, func() {
-			eventsPanel(c, events, sv.Name)
+		ui.Column(c).Fill().Children(func() {
+			ui.Tabs(c, &rightTab, "Dashboard", "Metrics", "Events")
+			switch rightTab {
+			case tabMetrics:
+				metricDetailsPane(c, all, history)
+			case tabEvents:
+				eventsPanel(c, events)
+			default:
+				dashboardPane(c, all, dashStore, history, paneWidth)
+			}
 		}).Fill()
-	case "terminal":
+	}
+
+	_, hasServer := findServer(all, selectedServer)
+	if bottomMode == "terminal" && hasServer {
 		ui.SplitVertical(c, &bottomHeight, top, func() {
 			terminalPanel(c)
 		}).Fill()
-	default:
-		top()
+		return
 	}
+	top()
 }
 
 // terminalPanel shows termSession — the live shell ensureTerminal opened
@@ -325,65 +316,6 @@ func terminalPanel(c *ui.Context) {
 		return
 	}
 	terminal.View(c, termSession).Fill().AutoFocus()
-}
-
-// eventsPanel lists sv's events (both threshold and operational), most
-// recent first — the one piece of "investigate this server further" the
-// brief asks for that's genuinely buildable without Phase 3 storage:
-// event.Engine already keeps this history, just not filtered per server
-// until now.
-func eventsPanel(c *ui.Context, events *event.Engine, serverName string) {
-	t := c.Theme()
-	all := events.History()
-
-	var mine []event.Event
-	for _, ev := range all {
-		if ev.Server == serverName {
-			mine = append(mine, ev)
-		}
-	}
-
-	ui.Column(c).Fill().Background(t.Surface).Children(func() {
-		ui.Row(c).Padding(10, 10, 4, 10).Children(func() {
-			ui.Text(c, fmt.Sprintf("Events — %s", serverName)).FontSize(11).Bold().TextColor(t.TextMuted)
-		})
-		ui.Scroll(c).Fill().Padding(0, 10, 10, 10).Gap(3).Children(func() {
-			if len(mine) == 0 {
-				ui.Text(c, "no events yet").FontSize(11).TextColor(t.TextMuted)
-				return
-			}
-			for i := len(mine) - 1; i >= 0; i-- {
-				eventRow(c, mine[i])
-			}
-		})
-	})
-}
-
-func eventRow(c *ui.Context, ev event.Event) {
-	t := c.Theme()
-	sev := ev.Severity
-	color := t.Success
-	switch sev {
-	case "warning":
-		color = t.Warning
-	case "critical":
-		color = t.Danger
-	}
-	if sev == "" {
-		sev = "normal"
-	}
-	kind := string(ev.Kind)
-	msg := ev.Message
-	if msg == "" {
-		msg = fmt.Sprintf("value=%v threshold=%v", ev.Value, ev.Threshold)
-	}
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Box(c).Size(7, 7).Radius(3.5).Background(color)
-		ui.Text(c, ev.Timestamp.Format("15:04:05")).FontSize(10).Width(50).TextColor(t.TextMuted)
-		ui.Text(c, kind).FontSize(10).Width(55).TextColor(t.TextMuted)
-		ui.Text(c, ev.Metric).FontSize(10).Width(90)
-		ui.Text(c, msg).FontSize(10).TextColor(t.TextMuted)
-	})
 }
 
 // chartSeries is one item's resolved, ready-to-draw data within a chart

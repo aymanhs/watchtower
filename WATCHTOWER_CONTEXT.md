@@ -8,7 +8,7 @@ the source when implementation details may have changed.
 
 Watchtower collects measurements from configured machines and services, applies
 threshold rules, tracks current health and event history, and presents the
-results through a console command or a native GUI. The GUI adds tray behavior,
+results through a native GUI. The GUI adds tray behavior,
 an interactive SSH terminal, user-configurable dashboards, and charts backed by
 local time-series storage.
 
@@ -31,12 +31,12 @@ The Windows GUI is the only build target; it is cross-compiled from Linux.
    enforcing a global concurrency limit.
 5. `internal/app.MetricTask` evaluates operational and threshold events, writes
    successful observations to optional `internal/state` live state and
-   `internal/storage` history, and optionally prints to the console. A history
+   `internal/storage` history. A history
    write failure is logged and does not turn a successful collection into a
    failed collection.
-6. `cmd/watchtower` and `cmd/watchtower-gui` are separate presentations over
-   the same engine. The GUI uses MyGo; keep toolkit imports out of `internal/*`.
-   The GUI loads dashboards separately because they are a GUI-only concern.
+6. `cmd/watchtower-gui` is the only presentation (a headless console command
+   was removed; restore it from git history if wanted). The GUI uses MyGo; keep
+   toolkit imports out of `internal/*`. The GUI loads dashboards separately.
 7. `internal/dashboard` describes and persists global dashboards;
    `internal/selector` parses selectors; `internal/dashboard/resolve.go` maps
    selectors against a live state snapshot; the GUI renders dashboard widgets
@@ -51,10 +51,18 @@ Useful starting points:
 - Live state: `internal/state`
 - Event state/transitions: `internal/event`
 - History storage: `internal/storage`
+- Event persistence: `internal/eventlog` (append-only JSONL per UTC day,
+  `data/storage/events-YYYY-MM-DD.jsonl`, same retention as metric history).
+  The GUI seeds `event.Engine` from it at startup via `Seed` and appends via
+  `OnEvent`. Only history is restored, not alarm state, so a target still
+  failing after a restart raises again (pairing treats it as the same outage).
+  Acknowledgements are not persisted yet.
 - Dashboard model and resolution: `internal/dashboard`
 - GUI entry point/lifecycle: `cmd/watchtower-gui/main.go`
 - Dashboard rendering/editor: `cmd/watchtower-gui/dashboard.go`
-- Main layout, events, terminal, and chart helpers: `cmd/watchtower-gui/panel.go`
+- Main layout, right-pane tabs, events table, terminal, and chart helpers: `cmd/watchtower-gui/panel.go`
+- Events tab (type/range filters, collector outage durations): `cmd/watchtower-gui/events.go`
+- Metrics tab (global measurement table with server, text/glob, and status filters, sortable columns, time range, copy/CSV export): `cmd/watchtower-gui/details.go`
 
 ## Configuration and runtime data
 

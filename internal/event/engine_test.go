@@ -272,3 +272,18 @@ func TestOnEvent(t *testing.T) {
 		t.Fatalf("listener fired after off(): %+v", got)
 	}
 }
+
+func TestSeedContinuesIDsAndCapsHistory(t *testing.T) {
+	e := NewEngine(3)
+	e.Seed([]Event{{ID: 4}, {ID: 7}, {ID: 9}, {ID: 12}})
+	h := e.History()
+	if len(h) != 3 || h[0].ID != 7 {
+		t.Fatalf("history = %+v", h)
+	}
+	e.mu.Lock()
+	ev := e.record(Event{})
+	e.mu.Unlock()
+	if ev.ID != 13 {
+		t.Errorf("next ID = %d, want 13", ev.ID)
+	}
+}

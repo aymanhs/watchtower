@@ -43,7 +43,7 @@ func wireTray(win *mygo.Window, events *event.Engine) *mygo.Tray {
 		// win.Update) — a real, if usually brief, delay between "the
 		// window is back" and "it shows the event you just got notified
 		// about". Forcing an Update right here, with selectedServer and
-		// bottomMode already set by the caller, means content is current
+		// rightTab already set by the caller, means content is current
 		// the instant it becomes visible, not up to a second later.
 		win.Update(func() {})
 	}
@@ -116,7 +116,7 @@ func notifyEvent(ev event.Event, show func()) {
 	})
 	n.OnClick(func() {
 		selectedServer = ev.Server
-		bottomMode = "events"
+		rightTab = tabEvents
 		show()
 	})
 	if err := n.Show(); err != nil {

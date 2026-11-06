@@ -29,8 +29,7 @@ type Paths struct {
 	Servers string // server config YAML, e.g. "data/servers"
 }
 
-// DefaultPaths is the layout used by both cmd/watchtower and
-// cmd/watchtower-gui.
+// DefaultPaths is the layout used by cmd/watchtower-gui.
 var DefaultPaths = Paths{Metrics: "metrics", Groups: "groups", Servers: "data/servers"}
 
 // connectWarmupTimeout bounds the up-front connection attempt per server,

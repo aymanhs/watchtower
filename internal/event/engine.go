@@ -230,6 +230,24 @@ func (e *Engine) History() []Event {
 	return out
 }
 
+// Seed loads previously persisted events (oldest first) into the history
+// and continues ID assignment after the highest one. It restores history
+// only, not alarm state: a still-failing target simply raises again on
+// its next evaluation. Call before any evaluation.
+func (e *Engine) Seed(events []Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, ev := range events {
+		if ev.ID > e.nextID {
+			e.nextID = ev.ID
+		}
+	}
+	e.history = append(append([]Event(nil), events...), e.history...)
+	if len(e.history) > e.maxHistory {
+		e.history = e.history[len(e.history)-e.maxHistory:]
+	}
+}
+
 // OnEvent registers fn to be called, outside the engine's own lock,
 // whenever EvaluateThreshold or EvaluateCollectorResult produces a
 // transition Event — the hook a presentation layer uses to react to new

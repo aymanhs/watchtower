@@ -275,10 +275,10 @@ func newDashboardModal(c *ui.Context, dashStore *dashboard.Store) {
 				ui.Text(c, newDashboardErr).FontSize(11).TextColor(t.Danger)
 			}
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("new-dashboard-cancel"), "Cancel").Clicked() {
+				if squareIconButton(c, "new-dashboard-cancel", cancelIcon, "Cancel").Clicked() {
 					newDashboardOpen = false
 				}
-				if ui.Button(c.Key("new-dashboard-create"), "Create").Clicked() {
+				if squareIconButton(c, "new-dashboard-create", confirmIcon, "Create dashboard").Clicked() {
 					confirmNewDashboard(dashStore)
 				}
 			})
@@ -1221,15 +1221,15 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 				ui.Text(c, addWidgetErr).FontSize(11).TextColor(t.Danger)
 			}
 
-			confirmLabel := "Add"
+			confirmLabel := "Add widget"
 			if editWidgetIdx >= 0 {
-				confirmLabel = "Save"
+				confirmLabel = "Save widget"
 			}
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("add-widget-cancel"), "Cancel").Clicked() {
+				if squareIconButton(c, "add-widget-cancel", cancelIcon, "Cancel").Clicked() {
 					addWidgetOpen = false
 				}
-				if ui.Button(c.Key("add-widget-confirm"), confirmLabel).Clicked() {
+				if squareIconButton(c, "add-widget-confirm", confirmIcon, confirmLabel).Clicked() {
 					confirmAddWidget(d, dashStore)
 				}
 			})
