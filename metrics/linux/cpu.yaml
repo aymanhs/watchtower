@@ -6,8 +6,8 @@ groups:
 tags:
   - system
   - resource
-interval: 5s
-timeout: 4s
+interval: 15s
+timeout: 10s
 collector:
   type: shell
   command: |
@@ -16,46 +16,6 @@ collector:
     # the real instantaneous reading — this needs no cross-cycle state.
     vmstat 1 2 | tail -1 | awk '{print "usage=" 100-$15}'
     echo "cores=$(nproc)"
-metrics:
-  cores:
-    unit: count
-    type: gauge
-    # No display block: this exists only so load1/5/15 can scale against
-    # the server's actual core count via display.scale.max_ref, same
-    # mechanism memory.yaml uses for "total". Stays plain text.
-  load1:
-    unit: load
-    type: gauge
-    display:
-      widget: bar
-      scale:
-        min: 0
-        max_ref: cores
-  load5:
-    unit: load
-    type: gauge
-    display:
-      widget: bar
-      scale:
-        min: 0
-        max_ref: cores
-  load15:
-    unit: load
-    type: gauge
-    display:
-      widget: bar
-      scale:
-        min: 0
-        max_ref: cores
-  usage:
-    unit: percent
-    type: gauge
-    display:
-      widget: gauge
-      primary: true
-      scale:
-        min: 0
-        max: 100
 events:
   - name: cpu.load1.warning
     measurement: load1

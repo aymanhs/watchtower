@@ -16,9 +16,6 @@ func httpDefFor(t *testing.T) *Definition {
 			Type: CollectorHTTP,
 			URL:  "http://{{.endpoint}}/varz",
 		},
-		Metrics: map[string]Measurement{
-			"connections": {Unit: "count", Type: TypeGauge},
-		},
 	}
 }
 

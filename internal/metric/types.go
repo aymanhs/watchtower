@@ -1,8 +1,13 @@
 // Package metric defines metric metadata: the declarative YAML shape that
-// describes how a measurement is collected, interpreted and alerted on.
+// describes how a measurement is collected and alerted on.
 //
-// This package knows nothing about SSH, storage, events state or the GUI.
-// It only parses and validates definitions.
+// This package knows nothing about SSH, storage, events state or the GUI,
+// and — deliberately — nothing about how a measurement should look: no
+// unit, no type, no display hint. A dashboard widget (internal/dashboard)
+// picks its own visual shape and its own per-series label/format/scale at
+// the point someone builds it; this package's only job is collection
+// (how to run the collector) and alerting (what counts as a threshold
+// breach), both things a dashboard can't reasonably infer on its own.
 package metric
 
 import (
@@ -10,24 +15,6 @@ import (
 	"strings"
 	"text/template"
 )
-
-// Type classifies how a measurement behaves over time.
-type Type string
-
-const (
-	TypeGauge   Type = "gauge"   // current value, e.g. memory used.
-	TypeCounter Type = "counter" // monotonically increasing, e.g. bytes received.
-	TypeRate    Type = "rate"    // change per unit time, e.g. requests/sec.
-)
-
-func (t Type) valid() bool {
-	switch t {
-	case TypeGauge, TypeCounter, TypeRate:
-		return true
-	default:
-		return false
-	}
-}
 
 // CollectorType identifies how a definition's command is executed.
 type CollectorType string
@@ -74,17 +61,6 @@ type Collector struct {
 	Config map[string]any `yaml:"config,omitempty"`
 }
 
-// Measurement describes one named value returned by a single collector execution.
-type Measurement struct {
-	Unit      string `yaml:"unit"`
-	Type      Type   `yaml:"type"`
-	Precision int    `yaml:"precision,omitempty"`
-
-	// Display is this measurement's GUI presentation hint. Nil (no
-	// "display:" block in YAML) means plain text, no code change needed.
-	Display *Display `yaml:"display,omitempty"`
-}
-
 // EventCondition is the comparison a threshold rule evaluates.
 type EventCondition string
 
@@ -101,11 +77,17 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
-// EventRule is a generic threshold rule attached to one measurement.
-// The event engine evaluates these without knowing what the metric means.
+// EventRule is a generic threshold rule attached to one measurement key.
+// The event engine evaluates these without knowing what the metric means —
+// no declared Unit/Type/Display anywhere in this package, just a name and
+// a numeric threshold. Measurement names a raw collector output key
+// directly; for a per-instance one (disk's "root.used_percent"), name the
+// base key ("used_percent") — SplitInstance's own instance/baseKey split
+// is what lets one rule apply across however many instances a collector
+// discovers at runtime, the same way it always has.
 type EventRule struct {
 	Name        string         `yaml:"name"`
-	Measurement string         `yaml:"measurement"` // which key in Definition.Metrics this applies to; required, no name-based guessing
+	Measurement string         `yaml:"measurement"` // a raw collector output key (or, for a per-instance one, its base key) this applies to
 	Condition   EventCondition `yaml:"condition"`
 	Threshold   float64        `yaml:"threshold"`
 	Severity    Severity       `yaml:"severity"`
@@ -152,9 +134,11 @@ func (r EventRule) Recovered(value float64) bool {
 	}
 }
 
-// Definition is one metric YAML file: identity, collection, measurements and
-// their event rules. One execution of Collector may produce several
-// Measurements, one per key in Metrics.
+// Definition is one metric YAML file: identity, collection and event
+// rules. No declared measurement schema — whatever keys Collector's
+// command/URL actually produces at runtime are the measurements, full
+// stop; see SplitInstance for the one piece of structure still imposed
+// on a raw key (its optional instance qualifier).
 type Definition struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description,omitempty"`
@@ -164,41 +148,37 @@ type Definition struct {
 	Interval Duration `yaml:"interval"`
 	Timeout  Duration `yaml:"timeout"`
 
-	Collector Collector              `yaml:"collector"`
-	Metrics   map[string]Measurement `yaml:"metrics"`
-	Events    []EventRule            `yaml:"events,omitempty"`
+	Collector Collector   `yaml:"collector"`
+	Events    []EventRule `yaml:"events,omitempty"`
 
 	// SourceFile is set by the loader, not read from YAML, for diagnostics.
 	SourceFile string `yaml:"-"`
 }
 
-// ResolveMeasurement looks up name against d.Metrics. The common case is
-// a direct hit — name matches a declared key exactly, baseKey == name,
-// instance == "". The other case is a dynamically per-instance name a
-// collector can legitimately emit without it being individually declared
-// (disk.yaml's per-volume stats: one declared "used_percent" measurement,
-// a collector that discovers real volumes at runtime and emits
-// "root.used_percent", "data.used_percent", ... — baseKey is
-// "used_percent" (what Display/Scale/events were actually declared
-// against), instance is "root"/"data" (everything before the last "."),
-// so an instance name is free to contain its own dots without breaking
-// this, including one not even in d.Metrics). ok is false only when
-// neither resolves.
-func (d *Definition) ResolveMeasurement(name string) (m Measurement, baseKey, instance string, ok bool) {
-	if m, ok := d.Metrics[name]; ok {
-		return m, name, "", true
+// SplitInstance decomposes a raw collector output key into its base key
+// and, if it has one, its instance qualifier — disk.yaml's per-volume
+// stats: a collector that discovers real volumes at runtime and emits
+// "root.used_percent", "data.used_percent", ... decomposes to baseKey
+// "used_percent" (what an EventRule is actually declared against),
+// instance "root"/"data" (everything before the last "."). No declared
+// schema is consulted — unlike the old per-Definition ResolveMeasurement,
+// this is unconditional: any key containing a "." decomposes this way,
+// full stop. A name with no "." has no instance: baseKey is the name
+// itself, instance "".
+func SplitInstance(name string) (baseKey, instance string) {
+	if i := strings.LastIndexByte(name, '.'); i > 0 && i < len(name)-1 {
+		return name[i+1:], name[:i]
 	}
-	if i := strings.LastIndexByte(name, '.'); i >= 0 {
-		inst, key := name[:i], name[i+1:]
-		if m, ok := d.Metrics[key]; ok && inst != "" {
-			return m, key, inst, true
-		}
-	}
-	return Measurement{}, "", "", false
+	return name, ""
 }
 
 // Validate checks structural invariants the YAML loader cannot enforce by
-// itself (required fields, sane durations, referenced measurement keys).
+// itself (required fields, sane durations, the collector's own shape, and
+// each event rule's own shape — there's no declared measurement set left
+// to check a rule's Measurement against; a rule naming a key the
+// collector never actually produces just never fires, the same
+// "degrades to nothing happening" spirit as a dashboard selector matching
+// nothing live).
 func (d *Definition) Validate() error {
 	if d.Name == "" {
 		return fmt.Errorf("metric definition missing name")
@@ -243,27 +223,6 @@ func (d *Definition) Validate() error {
 	default:
 		return fmt.Errorf("metric %q: unknown collector type %q", d.Name, d.Collector.Type)
 	}
-	if len(d.Metrics) == 0 {
-		return fmt.Errorf("metric %q: must define at least one measurement", d.Name)
-	}
-	primaryCount := 0
-	for key, m := range d.Metrics {
-		if m.Unit == "" {
-			return fmt.Errorf("metric %q: measurement %q missing unit", d.Name, key)
-		}
-		if !m.Type.valid() {
-			return fmt.Errorf("metric %q: measurement %q has invalid type %q", d.Name, key, m.Type)
-		}
-		if err := d.validateDisplay(key, m); err != nil {
-			return err
-		}
-		if m.Display != nil && m.Display.Primary {
-			primaryCount++
-		}
-	}
-	if primaryCount > 1 {
-		return fmt.Errorf("metric %q: more than one measurement marked display.primary", d.Name)
-	}
 	seenEventNames := make(map[string]bool, len(d.Events))
 	for _, ev := range d.Events {
 		if ev.Name == "" {
@@ -275,9 +234,6 @@ func (d *Definition) Validate() error {
 		seenEventNames[ev.Name] = true
 		if ev.Measurement == "" {
 			return fmt.Errorf("metric %q: event %q missing measurement", d.Name, ev.Name)
-		}
-		if _, ok := d.Metrics[ev.Measurement]; !ok {
-			return fmt.Errorf("metric %q: event %q references unknown measurement %q", d.Name, ev.Name, ev.Measurement)
 		}
 		if ev.Condition != ConditionAbove && ev.Condition != ConditionBelow {
 			return fmt.Errorf("metric %q: event %q has invalid condition %q", d.Name, ev.Name, ev.Condition)

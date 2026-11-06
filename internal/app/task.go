@@ -69,14 +69,6 @@ func (t *MetricTask) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Raw values of every measurement this cycle, so a display.scale's
-	// max_ref can look up a sibling (e.g. "used" scaled against "total")
-	// regardless of which order observations happen to come in.
-	rawValues := make(map[string]float64, len(obs))
-	for _, o := range obs {
-		rawValues[strings.TrimPrefix(o.Metric, t.Def.Name+".")] = o.Value
-	}
-
 	measurementSeverity := make(map[string]metric.Severity, len(obs))
 	measurements := make([]state.MeasurementView, 0, len(obs))
 	for _, o := range obs {
@@ -84,19 +76,15 @@ func (t *MetricTask) Run(ctx context.Context) error {
 			fmt.Printf("%-32s = %-16v %s\n", o.FullName(), o.Value, o.Timestamp.Format(time.RFC3339))
 		}
 		measurement := strings.TrimPrefix(o.Metric, t.Def.Name+".")
-		def, baseKey, instance, ok := t.Def.ResolveMeasurement(measurement)
-		// ruleKey is what event rules and zone derivation are actually
-		// declared against — baseKey for a resolved measurement (the
-		// static case: baseKey == measurement; the per-instance case:
-		// baseKey is the declared key after the last ".", e.g.
-		// "used_percent" for "root.used_percent"). measurement itself
-		// stays the per-alarm identity either way, so "disk.root" and
-		// "disk.data" alarm independently instead of sharing one
-		// ambiguous state.
-		ruleKey := measurement
-		if ok {
-			ruleKey = baseKey
-		}
+		// ruleKey is what event rules are actually declared against —
+		// baseKey for a per-instance measurement (disk's
+		// "root.used_percent" decomposes to ruleKey "used_percent", so
+		// one declared rule applies across however many volumes a
+		// collector discovers), the measurement itself otherwise.
+		// measurement stays the per-alarm identity either way, so
+		// "disk.root" and "disk.data" alarm independently instead of
+		// sharing one ambiguous state.
+		ruleKey, _ := metric.SplitInstance(measurement)
 		if ev := t.Events.EvaluateThreshold(t.ServerName, t.Def, measurement, ruleKey, o.Value, o.Timestamp); ev != nil && t.Print {
 			printEvent(*ev)
 		}
@@ -106,77 +94,13 @@ func (t *MetricTask) Run(ctx context.Context) error {
 			}
 		}
 		measurementSeverity[measurement] = t.Events.CurrentSeverity(t.ServerName, t.Def.Name+"."+measurement)
-
-		mv := state.MeasurementView{Key: measurement, Value: o.Value}
-		if !ok {
-			measurements = append(measurements, mv) // shouldn't happen; collect.Execute already filters to known keys
-			continue
-		}
-		mv.Unit = def.Unit
-		mv.Type = def.Type
-		if disp := def.Display; disp != nil {
-			mv.Widget = disp.Widget
-			mv.Primary = disp.Primary
-			mv.Label = disp.Label
-			mv.Format = disp.Format
-			if instance != "" && disp.Label != "" {
-				// "Used" -> "Used (root)" — the dashboard-free, built-in
-				// metric line needs some way to tell volumes apart too,
-				// not just the dashboard's own per-series labels.
-				mv.Label = disp.Label + " (" + instance + ")"
-			}
-			scaleCfg := disp.Scale
-			if scaleCfg != nil && instance != "" && scaleCfg.MaxRef != "" {
-				// max_ref: total means "this instance's own total", not
-				// a single global one shared across every volume —
-				// qualify it the same way the collector itself named
-				// this instance's sibling measurements: instance+"."+key,
-				// matching rawValues' own keys (built straight from
-				// o.Metric, so already in whatever dotted shape the
-				// collector actually emitted).
-				scoped := *scaleCfg
-				scoped.MaxRef = instance + "." + scoped.MaxRef
-				scaleCfg = &scoped
-			}
-			scale, err := state.ResolveScale(scaleCfg, rawValues)
-			if err != nil {
-				// A bad max_ref this cycle (e.g. the sibling momentarily
-				// missing) degrades to plain text rather than failing the
-				// whole collection — one measurement's display problem
-				// must not look like a collector failure.
-				if t.Print {
-					fmt.Printf("[%s/%s] display: %v\n", t.ServerName, t.Def.Name, err)
-				}
-			} else {
-				mv.Scale = scale
-				// Both gauge and bar can show zone bands when the
-				// measurement has event rules to derive them from; a
-				// measurement with no rules just gets no Zones either way
-				// (ResolveZones returns nil), which both widgets already
-				// render as their plain unzoned fallback.
-				if scale != nil && (disp.Widget == metric.WidgetGauge || disp.Widget == metric.WidgetBar) {
-					mv.Zones = state.ResolveZones(rulesFor(t.Def, ruleKey), *scale)
-				}
-			}
-		}
-		measurements = append(measurements, mv)
+		measurements = append(measurements, state.MeasurementView{Key: measurement, Value: o.Value})
 	}
 
 	if t.Store != nil {
 		t.Store.UpdateSuccess(t.ServerName, t.Def.Name, measurements, measurementSeverity, now)
 	}
 	return nil
-}
-
-// rulesFor returns def's event rules that target one measurement.
-func rulesFor(def *metric.Definition, measurement string) []metric.EventRule {
-	var out []metric.EventRule
-	for _, r := range def.Events {
-		if r.Measurement == measurement {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 func printEvent(ev event.Event) {

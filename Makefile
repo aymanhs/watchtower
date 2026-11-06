@@ -29,7 +29,7 @@ endif
 # console flash), app name/version from mygo.json, icon/installer-ready
 # once we add those. Cross-compiles cleanly from Linux — mygo needs no cgo.
 build-windows: kill
-	go run github.com/egoist/mygo/cmd/mygo@$(MYGO_VERSION) build -platform windows/amd64
+	go run github.com/egoist/mygo/cmd/mygo@$(MYGO_VERSION) build -platform windows/amd64 -skip-installer
 	GOOS=windows GOARCH=amd64 go build -o dist/windows-amd64/watchtower-console.exe ./cmd/watchtower
 
 # Local dev builds for this machine, for quick iteration without the

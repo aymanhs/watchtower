@@ -81,16 +81,26 @@ func main() {
 	// a Hide (see quitting in tray.go).
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
 	mygo.App.WhenReady(func() {
-		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:     "Watchtower",
-			Width:     420,
-			Height:    240,
+		// var, not :=: the Content closure below refers to win from
+		// inside the very statement that would otherwise declare it —
+		// win's scope with := wouldn't begin until after that statement,
+		// so the closure (which only actually runs later, once the
+		// window exists) needs it declared first instead.
+		var win *mygo.Window
+		win = mygo.NewWindow(mygo.WindowOptions{
+			Title: "Watchtower",
+			// Large enough on first launch to actually see a dashboard
+			// grid (several tiles) at once, not just its top-left
+			// corner — the old 420x240 was sized for the toolbar alone,
+			// from before dashboards existed.
+			Width:     1200,
+			Height:    800,
 			MinWidth:  140,
 			MinHeight: 60,
 			// Starts as a normal, visible window — only minimizing or
 			// closing it shrinks it down to the tray (wireTray's
 			// OnMinimize/OnClose), never the other way round at launch.
-			Content: ui.View(func(c *ui.Context) { render(c, store, events, shells, history, dashStore) }),
+			Content: ui.View(func(c *ui.Context) { render(c, win, store, events, shells, history, dashStore) }),
 		})
 
 		tray := wireTray(win, events)

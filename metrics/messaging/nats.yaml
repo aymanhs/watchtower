@@ -16,52 +16,6 @@ collector:
   # already matches its JSON field name in varz.
   type: http
   url: "http://{{.endpoint}}/varz"
-metrics:
-  connections:
-    unit: count
-    type: gauge
-    display:
-      label: Connections
-  in_msgs:
-    unit: count
-    type: counter
-    display:
-      label: In Messages
-  out_msgs:
-    unit: count
-    type: counter
-    display:
-      label: Out Messages
-  in_bytes:
-    unit: bytes
-    type: counter
-    display:
-      label: In
-  out_bytes:
-    unit: bytes
-    type: counter
-    display:
-      label: Out
-  slow_consumers:
-    unit: count
-    type: gauge
-    display:
-      label: Slow Consumers
-  mem:
-    unit: bytes
-    type: gauge
-    display:
-      label: Memory
-  cpu:
-    unit: percent
-    type: gauge
-    display:
-      widget: gauge
-      primary: true
-      label: CPU
-      scale:
-        min: 0
-        max: 100
 events:
   - name: nats.slow_consumers.warning
     measurement: slow_consumers

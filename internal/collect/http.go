@@ -55,13 +55,27 @@ func executeHTTP(ctx context.Context, dialer Dialer, serverName string, def *met
 		return nil, fmt.Errorf("metric %q on %s: decode JSON from %s: %w", def.Name, serverName, url, err)
 	}
 
-	values := make(map[string]float64, len(def.Metrics))
-	for key := range def.Metrics {
-		field := key
-		if mapped, ok := def.Collector.Fields[key]; ok {
-			field = mapped
+	// No declared measurement list to iterate (metric.Definition has none
+	// any more) — every top-level JSON field that's a plain number is a
+	// measurement, named after its own JSON key, for free: nats.yaml's
+	// own /varz response is exactly this shape (connections, in_msgs,
+	// cpu, ... all flat top-level numbers), which is why it never needed
+	// a Fields block to begin with. Fields still covers what
+	// auto-discovery alone can't: renaming a field, or reaching one
+	// level of nesting ("cluster.name") — each of its entries is looked
+	// up by its own dot-path and written under its own declared
+	// measurement name, taking precedence over an auto-discovered one of
+	// the same name.
+	values := map[string]float64{}
+	if obj, ok := decoded.(map[string]any); ok {
+		for key, v := range obj {
+			if f, ok := v.(float64); ok {
+				values[key] = f
+			}
 		}
-		if v, ok := lookupNumber(decoded, field); ok {
+	}
+	for key, path := range def.Collector.Fields {
+		if v, ok := lookupNumber(decoded, path); ok {
 			values[key] = v
 		}
 		// Missing or non-numeric: skipped, not an error — same tolerance

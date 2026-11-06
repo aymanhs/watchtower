@@ -36,9 +36,6 @@ func natsDef() *metric.Definition {
 			Type:    metric.CollectorShell,
 			Command: "curl -s http://{{.endpoint}}/varz",
 		},
-		Metrics: map[string]metric.Measurement{
-			"connections": {Unit: "count", Type: metric.TypeGauge},
-		},
 	}
 }
 

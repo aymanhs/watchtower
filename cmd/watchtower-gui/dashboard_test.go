@@ -120,8 +120,18 @@ func TestAvailableSeries(t *testing.T) {
 	}
 	got := availableSeries(all)
 	want := []string{
-		"*/cpu.usage", // reported by both servers
-		"jumpbox/cpu.load1", "jumpbox/cpu.usage", "jumpbox/memory.used",
+		// Every position (server, metric) varies independently —
+		// "*/*.x" (both wildcarded) included — so typing a "*" into
+		// either slot, or both at once, always has something to
+		// autocomplete toward, regardless of how many servers currently
+		// share a given measurement.
+		"*/*.load1", "*/*.usage", "*/*.used",
+		"*/cpu.load1", "*/cpu.usage",
+		"*/memory.used",
+		"jumpbox/*.load1", "jumpbox/*.usage", "jumpbox/*.used",
+		"jumpbox/cpu.load1", "jumpbox/cpu.usage",
+		"jumpbox/memory.used",
+		"other-server/*.usage",
 		"other-server/cpu.usage",
 	}
 	if len(got) != len(want) {
@@ -138,27 +148,69 @@ func TestDefaultSeriesPick(t *testing.T) {
 	all := []state.ServerView{
 		{Name: "jumpbox", Metrics: []state.MetricView{
 			{Name: "disk", Measurements: []state.MeasurementView{
-				{Key: "root.total", Unit: "bytes"},
-				{Key: "root.used_percent", Unit: "percent"},
+				{Key: "root.total"},
+				{Key: "root.used_percent"},
 			}},
 		}},
 	}
-	options := availableSeries(all) // sorted: "total" sorts before "used_percent" alphabetically
-	if options[0] != "jumpbox/disk.root.total" {
-		t.Fatalf("test fixture assumption broken: options[0] = %q, want jumpbox/disk.root.total", options[0])
-	}
+	// A fixed, hand-built options list (not availableSeries' own output,
+	// which generates several suggestions per measurement and isn't what
+	// this test is about). There's no more per-measurement Unit to prefer
+	// a percent-scaled option by (see internal/metric's package doc), so
+	// every widget type just gets whatever sorts first.
+	options := []string{"jumpbox/disk.root.total", "jumpbox/disk.root.used_percent"}
 
-	if got := defaultSeriesPick(options, all, dashboard.WidgetBars); got != "jumpbox/disk.root.used_percent" {
-		t.Errorf("bars: got %q, want the percent-scaled option even though it doesn't sort first", got)
+	if got := defaultSeriesPick(options, all, dashboard.WidgetBars); got != options[0] {
+		t.Errorf("bars: got %q, want the plain first option %q", got, options[0])
 	}
-	if got := defaultSeriesPick(options, all, dashboard.WidgetGauge); got != "jumpbox/disk.root.used_percent" {
-		t.Errorf("gauge: got %q, want the percent-scaled option", got)
+	if got := defaultSeriesPick(options, all, dashboard.WidgetGauge); got != options[0] {
+		t.Errorf("gauge: got %q, want the plain first option %q", got, options[0])
 	}
 	if got := defaultSeriesPick(options, all, dashboard.WidgetNumber); got != options[0] {
-		t.Errorf("number: got %q, want the plain first option %q (no percent preference)", got, options[0])
+		t.Errorf("number: got %q, want the plain first option %q", got, options[0])
 	}
 	if got := defaultSeriesPick(nil, all, dashboard.WidgetBars); got != "" {
 		t.Errorf("got %q, want \"\" for no options at all", got)
+	}
+}
+
+func TestAvailableSeries_SuggestsInstanceWildcard(t *testing.T) {
+	all := []state.ServerView{
+		{Name: "disk-server", Metrics: []state.MetricView{
+			{Name: "disk", Measurements: []state.MeasurementView{
+				{Key: "root.used_percent"},
+				{Key: "data.used_percent"},
+			}},
+		}},
+	}
+	got := availableSeries(all)
+	wantPresent := []string{
+		"disk-server/disk.root.used_percent", // exact, per-instance
+		"disk-server/disk.data.used_percent", // exact, per-instance
+		"disk-server/disk.*.used_percent",    // this server, any instance — an Autocomplete can reach by typing toward it
+		"disk-server/disk.used_percent",      // equivalent 2-segment form (selector.Match is instance-agnostic with no instance segment)
+		// Server and instance wildcarded together — "every volume on
+		// every server" is exactly as real a thing to type toward as
+		// either wildcarded alone, and needs its own suggestion since
+		// an Autocomplete can't combine two single-wildcard matches on
+		// its own.
+		"*/disk.*.used_percent",
+		"*/disk.used_percent",
+		// Metric name wildcarded too (rarer, but the same reasoning
+		// applies: "any metric's used_percent, any instance, any server").
+		"*/*.used_percent",
+	}
+	for _, w := range wantPresent {
+		found := false
+		for _, g := range got {
+			if g == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("availableSeries() = %v, missing %q", got, w)
+		}
 	}
 }
 
@@ -235,52 +287,81 @@ func TestApplyFormat(t *testing.T) {
 }
 
 func TestSeriesValue_FormatOverridesDefault(t *testing.T) {
-	mv := state.MeasurementView{Unit: "bytes", Value: 23.6 * (1 << 30)}
+	mv := state.MeasurementView{Value: 23.6 * (1 << 30)}
 	ref := dashboard.SeriesRef{Format: "%.1f GiB custom"}
-	// A bogus "value in raw bytes, printed as GiB with %.1f" format
-	// wouldn't make sense without dividing first — this just proves
-	// ref.Format wins over the unit-driven default, not that the division
-	// happened (the format string is the caller's own responsibility).
-	if got := seriesValue(ref, mv); got == formatValue(mv.Unit, mv.Format, mv.Value) {
+	// Proves ref.Format wins over the plain default formatter, not that
+	// any unit-driven division happened (the format string is the
+	// caller's own responsibility — there's no Unit left to divide by,
+	// see internal/metric's package doc).
+	if got := seriesValue(ref, mv); got == formatValue(mv.Value) {
 		t.Errorf("seriesValue with an explicit Format fell back to the default formatter: %q", got)
 	}
 
 	noFormat := dashboard.SeriesRef{}
-	if got, want := seriesValue(noFormat, mv), formatValue(mv.Unit, mv.Format, mv.Value); got != want {
+	if got, want := seriesValue(noFormat, mv), formatValue(mv.Value); got != want {
 		t.Errorf("seriesValue with no Format = %q, want the default formatter's %q", got, want)
 	}
 }
 
 func TestTileSize(t *testing.T) {
-	w1, h1 := tileSize(1)
+	w1, h1 := tileSize(1, 1)
 	if w1 != tileWidth || h1 != tileHeight {
-		t.Errorf("tileSize(1) = (%v, %v), want (%v, %v)", w1, h1, tileWidth, tileHeight)
+		t.Errorf("tileSize(1, 1) = (%v, %v), want (%v, %v)", w1, h1, tileWidth, tileHeight)
 	}
-	w2, h2 := tileSize(2)
+	w2, h2 := tileSize(2, 2)
 	wantW2 := tileWidth*2 + gridGap
 	wantH2 := tileHeight*2 + gridGap
 	if w2 != wantW2 || h2 != wantH2 {
-		t.Errorf("tileSize(2) = (%v, %v), want (%v, %v) (2 cells + the gap between them)", w2, h2, wantW2, wantH2)
+		t.Errorf("tileSize(2, 2) = (%v, %v), want (%v, %v) (2 cells + the gap between them)", w2, h2, wantW2, wantH2)
+	}
+	// Independent directions: a wide-short tile isn't forced square.
+	w3, h3 := tileSize(3, 1)
+	wantW3 := tileWidth*3 + gridGap*2
+	if w3 != wantW3 || h3 != tileHeight {
+		t.Errorf("tileSize(3, 1) = (%v, %v), want (%v, %v)", w3, h3, wantW3, tileHeight)
 	}
 }
 
-// TestOpenWidgetEditor_PrefillsDraft checks both shapes: a single-series
-// widget (gauge/number) populates addWidgetSinglePick/addWidgetFormat, a
-// multi-series one (chart/pie) populates addWidgetSeriesPicks instead.
+func TestMinSpan(t *testing.T) {
+	cases := []struct{ x, y, want int }{
+		{1, 1, 1},
+		{3, 1, 1},
+		{1, 3, 1},
+		{2, 5, 2},
+	}
+	for _, tc := range cases {
+		if got := minSpan(tc.x, tc.y); got != tc.want {
+			t.Errorf("minSpan(%d, %d) = %d, want %d", tc.x, tc.y, got, tc.want)
+		}
+	}
+}
+
+func TestResetWidgetDraft_ClearsSeriesPicks(t *testing.T) {
+	addWidgetSeriesPicks = []dashboard.SeriesRef{{Selector: "a"}, {Selector: "b"}, {Selector: "c"}}
+	resetWidgetDraft()
+	if addWidgetSeriesPicks != nil {
+		t.Errorf("addWidgetSeriesPicks = %v, want nil after reset", addWidgetSeriesPicks)
+	}
+}
+
+// TestOpenWidgetEditor_PrefillsDraft checks every widget type now prefills
+// the same way: w.Series copies straight into addWidgetSeriesPicks,
+// Format included — there's no more gauge/number-only single-pick shape.
 func TestOpenWidgetEditor_PrefillsDraft(t *testing.T) {
 	gauge := dashboard.Widget{
 		Type: dashboard.WidgetGauge, Title: "Mem", Span: 2,
-		Series: []dashboard.SeriesRef{{Selector: "jumpbox/memory.free", Format: "%.1f GiB"}},
+		Series: []dashboard.SeriesRef{{Selector: "jumpbox/memory.free", Label: "Free Memory", Format: "%.1f GiB"}},
 	}
 	openWidgetEditor(3, gauge)
 	if editWidgetIdx != 3 {
 		t.Errorf("editWidgetIdx = %d, want 3", editWidgetIdx)
 	}
-	if addWidgetType != dashboard.WidgetGauge || addWidgetTitle != "Mem" || addWidgetSpan != 2 {
-		t.Errorf("draft = type:%v title:%q span:%d, want gauge/Mem/2", addWidgetType, addWidgetTitle, addWidgetSpan)
+	if addWidgetType != dashboard.WidgetGauge || addWidgetTitle != "Mem" || addWidgetSpanX != 2 || addWidgetSpanY != 2 {
+		t.Errorf("draft = type:%v title:%q spanX:%v spanY:%v, want gauge/Mem/2/2 (legacy square Span falls back to both)", addWidgetType, addWidgetTitle, addWidgetSpanX, addWidgetSpanY)
 	}
-	if addWidgetSinglePick != "jumpbox/memory.free" || addWidgetFormat != "%.1f GiB" {
-		t.Errorf("single-series draft = pick:%q format:%q, want jumpbox/memory.free / %%.1f GiB", addWidgetSinglePick, addWidgetFormat)
+	if len(addWidgetSeriesPicks) != 1 || addWidgetSeriesPicks[0].Selector != "jumpbox/memory.free" ||
+		addWidgetSeriesPicks[0].Label != "Free Memory" || addWidgetSeriesPicks[0].Format != "%.1f GiB" {
+		t.Errorf("gauge draft series = %+v, want [{jumpbox/memory.free Free Memory %%.1f GiB}]", addWidgetSeriesPicks)
 	}
 
 	chart := dashboard.Widget{
@@ -291,11 +372,17 @@ func TestOpenWidgetEditor_PrefillsDraft(t *testing.T) {
 		},
 	}
 	openWidgetEditor(0, chart)
-	if len(addWidgetSeriesPicks) != 2 || addWidgetSeriesPicks[0] != "jumpbox/cpu.load1" || addWidgetSeriesPicks[1] != "jumpbox/cpu.load5" {
-		t.Errorf("multi-series draft = %v, want [jumpbox/cpu.load1 jumpbox/cpu.load5]", addWidgetSeriesPicks)
+	if len(addWidgetSeriesPicks) != 2 || addWidgetSeriesPicks[0].Selector != "jumpbox/cpu.load1" || addWidgetSeriesPicks[1].Selector != "jumpbox/cpu.load5" {
+		t.Errorf("multi-series draft = %+v, want [jumpbox/cpu.load1 jumpbox/cpu.load5]", addWidgetSeriesPicks)
 	}
-	if addWidgetSinglePick != "" {
-		t.Errorf("multi-series edit left a stale single-series pick: %q", addWidgetSinglePick)
+
+	wide := dashboard.Widget{
+		Type: dashboard.WidgetBars, SpanX: 3, SpanY: 1,
+		Series: []dashboard.SeriesRef{{Selector: "jumpbox/disk.*.used_percent"}},
+	}
+	openWidgetEditor(1, wide)
+	if addWidgetSpanX != 3 || addWidgetSpanY != 1 {
+		t.Errorf("independent spanX/spanY draft = %v/%v, want 3/1", addWidgetSpanX, addWidgetSpanY)
 	}
 }
 
@@ -393,7 +480,7 @@ func TestConfirmAddWidget_EditReplacesInPlace(t *testing.T) {
 	editWidgetIdx = 0
 	addWidgetType = dashboard.WidgetNumber
 	addWidgetTitle = "New"
-	addWidgetSinglePick = "example/cpu.usage"
+	addWidgetSeriesPicks = []dashboard.SeriesRef{{Selector: "example/cpu.usage"}}
 
 	confirmAddWidget(d, dashStore)
 	if addWidgetErr != "" {
@@ -411,6 +498,40 @@ func TestConfirmAddWidget_EditReplacesInPlace(t *testing.T) {
 	}
 	if got.Widgets[1].Title != "Keep" {
 		t.Errorf("widget 1 title = %q, want Keep (untouched)", got.Widgets[1].Title)
+	}
+}
+
+// TestConfirmAddWidget_DropsBlankTrailingRow checks the series table's
+// own standing "type a new one here" row — a blank Selector, present by
+// construction, never an entry the user actually asked to save — is
+// filtered out rather than failing Validate.
+func TestConfirmAddWidget_DropsBlankTrailingRow(t *testing.T) {
+	dashStore, err := dashboard.LoadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &dashboard.Dashboard{Name: "example"}
+	if err := dashStore.Save(d); err != nil {
+		t.Fatal(err)
+	}
+
+	resetWidgetDraft()
+	addWidgetType = dashboard.WidgetChart
+	addWidgetSeriesPicks = []dashboard.SeriesRef{
+		{Selector: "example/cpu.usage"},
+		{Selector: "   "}, // blank (whitespace-only) trailing row
+	}
+
+	confirmAddWidget(d, dashStore)
+	if addWidgetErr != "" {
+		t.Fatalf("confirmAddWidget: %s", addWidgetErr)
+	}
+	got, ok := dashStore.Get("example")
+	if !ok {
+		t.Fatal("dashboard \"example\" not found in store")
+	}
+	if len(got.Widgets) != 1 || len(got.Widgets[0].Series) != 1 || got.Widgets[0].Series[0].Selector != "example/cpu.usage" {
+		t.Fatalf("got widgets %+v, want exactly 1 widget with 1 series (example/cpu.usage), blank row dropped", got.Widgets)
 	}
 }
 

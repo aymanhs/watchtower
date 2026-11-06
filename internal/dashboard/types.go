@@ -1,10 +1,10 @@
 // Package dashboard is a user-composed widget grid — the GUI's "what do I
-// want to look at" layer, deliberately decoupled from metric.Display's
-// "how does this one measurement render inline" auto-display. A metric
-// definition's Display block is about a sensible default appearing with
-// zero GUI config; a dashboard widget is someone choosing, after the
-// fact, to put a specific selection of measurements on a chart, gauge,
-// number or pie tile.
+// want to look at" layer. There's no auto-display derived from a metric
+// definition any more (internal/metric declares no Unit/Type/Display at
+// all — see its own package doc); a dashboard widget is someone
+// explicitly choosing to put a specific selection of measurements on a
+// chart, gauge, number or pie tile, with its own Min/Max for a gauge/bars'
+// scale.
 //
 // A Dashboard is global, not scoped to any one server: each of a widget's
 // Series names a selector (see internal/selector) — a pattern like
@@ -37,15 +37,13 @@ import (
 type WidgetType string
 
 const (
-	// WidgetChart is a multi-series line chart over history — the same
-	// unit-grouped, dual-axis rendering the ad hoc per-metric chart
-	// already does, just fed an explicit, user-picked list of series
-	// instead of "every measurement of whichever metric was clicked".
+	// WidgetChart is a multi-series line chart over history, all series
+	// sharing one y-axis, fed an explicit, user-picked list of series.
 	WidgetChart WidgetType = "chart"
-	// WidgetGauge is a dial-style gauge — needs each measurement it
-	// shows to already resolve a Scale from its own metric.Display (a
-	// dashboard widget doesn't invent one). A selector matching several
-	// servers draws several gauges, not one.
+	// WidgetGauge is a dial-style gauge — needs the widget's own Min/Max
+	// (see Widget.Scale) set to draw a dial at all; with neither set it
+	// shows a "no scale configured" placeholder instead. A selector
+	// matching several servers draws several gauges, not one.
 	WidgetGauge WidgetType = "gauge"
 	// WidgetNumber is a plain value tile — several matches draw a small
 	// grid of values rather than one.
@@ -92,10 +90,10 @@ type SeriesRef struct {
 	// Format is a user-supplied printf-style format string for this
 	// series' number — e.g. "%.0f", "%5.2fGb", "%6.2f%%" — for a
 	// dashboard widget wanting to show a value exactly how it chooses
-	// to, not how metric.Display.Format's int/human auto-scaling would.
-	// Unset means fall back to the measurement's own formatValue
-	// (unit + display.format) exactly as before this field existed.
-	// Never validated here (a bad verb isn't this package's business,
+	// to. Unset means fall back to the plain default formatValue (two
+	// decimal places, no unit-driven scaling — there's no per-measurement
+	// Unit any more, see internal/metric's package doc). Never validated
+	// here (a bad verb isn't this package's business,
 	// and Go's fmt never panics on one — it prints "%!verb(...)",
 	// visibly wrong rather than silently blank, same as any other
 	// best-effort fallback in this app).
@@ -120,17 +118,56 @@ type Widget struct {
 	Title  string      `yaml:"title,omitempty"`
 	Series []SeriesRef `yaml:"series"`
 
-	// Span is how many grid cells this tile takes, each side (a 2 means
-	// 2x2, not 2x1) — 0 (unset) means "this type's own default": 2 for a
-	// chart (axis labels, a legend and several series genuinely need more
-	// room than a single number does), 1 for everything else. Explicit
-	// Span always overrides the default either direction — a one-series
-	// gauge can be made bigger, a chart with only one line can be made
-	// smaller.
+	// Span is how many grid cells this tile took, both sides equally (a
+	// 2 always meant 2x2, never 2x1) — superseded by SpanX/SpanY below,
+	// which size each side independently. Still read (never written) for
+	// backward compatibility with a dashboard file saved before SpanX/Y
+	// existed; RawSpanX/RawSpanY fall back to it when SpanX/SpanY are
+	// unset. A fresh Save always writes SpanX/SpanY only.
 	Span int `yaml:"span,omitempty"`
+
+	// SpanX/SpanY are how many grid cells wide/tall this tile takes —
+	// independent of each other, so a tile can be wide-and-short,
+	// tall-and-narrow, or square, not just square. 0 (unset) means "this
+	// type's own default" in that direction: 2 for a chart or bars
+	// (axis labels, a legend, several bars/lines genuinely need more
+	// room than a single number does), 1 for everything else. An
+	// explicit value always overrides the default in that direction
+	// only — a one-series gauge can be made bigger, a chart with only
+	// one line can be made narrower without also being made shorter.
+	SpanX int `yaml:"span_x,omitempty"`
+	SpanY int `yaml:"span_y,omitempty"`
+
+	// Min/Max are a gauge or bars widget's own absolute scale — the
+	// 0%/100% reference its dial or bar fills against. There's no
+	// per-measurement scale to resolve this from any more
+	// (internal/metric declares no Unit/Type/Display/Scale at all —
+	// see its package doc); whoever builds the widget sets it directly,
+	// once, here, same as every other per-widget choice. Both nil (the
+	// common case: a new gauge/bars widget defaults to 0-100, covering
+	// any *_percent measurement) means no scale at all: a gauge shows
+	// "no scale configured" instead of a dial, bars fall back to
+	// scaling relative to their own peer values instead (see
+	// cmd/watchtower-gui's barsTile) — a chart/pie/number widget never
+	// reads these at all.
+	Min *float64 `yaml:"min,omitempty"`
+	Max *float64 `yaml:"max,omitempty"`
 }
 
-// defaultSpan is Span's unset (0) value resolved per type.
+// Scale reports w's own Min/Max as a plain (min, max, ok) triple — ok is
+// false if either is unset, or if they're equal (a degenerate range
+// nothing can fill a fraction of).
+func (w Widget) Scale() (min, max float64, ok bool) {
+	if w.Min == nil || w.Max == nil || *w.Min == *w.Max {
+		return 0, 0, false
+	}
+	return *w.Min, *w.Max, true
+}
+
+// defaultSpan is SpanX/SpanY's unset (0) value resolved per type — both
+// directions share one default (a chart's "wants more room" is the same
+// story wide or tall), only an explicit SpanX/SpanY ever pulls them
+// apart.
 func (t WidgetType) defaultSpan() int {
 	if t == WidgetChart || t == WidgetBars {
 		return 2
@@ -138,15 +175,42 @@ func (t WidgetType) defaultSpan() int {
 	return 1
 }
 
-// maxSpan is the largest Span this package accepts — generous enough for
-// "let me see this one clearly" without a single tile swallowing an
-// entire dashboard.
-const maxSpan = 3
+// MaxSpan is the largest SpanX/SpanY this package accepts, each
+// direction independently — generous enough for "let me see this one
+// clearly" without a single tile swallowing an entire dashboard.
+const MaxSpan = 6
 
-// EffectiveSpan is Span if set, else Type's own default.
-func (w Widget) EffectiveSpan() int {
-	if w.Span > 0 {
-		return w.Span
+// RawSpanX/RawSpanY are SpanX/SpanY's (or, failing that, the legacy
+// square Span's) actual stored value, 0 meaning "unset / auto" — unlike
+// EffectiveSpanX/EffectiveSpanY, these don't resolve to the type's own
+// default, so an editor can tell "never explicitly set" apart from
+// "explicitly set to what the default happens to be".
+func (w Widget) RawSpanX() int {
+	if w.SpanX > 0 {
+		return w.SpanX
+	}
+	return w.Span
+}
+
+func (w Widget) RawSpanY() int {
+	if w.SpanY > 0 {
+		return w.SpanY
+	}
+	return w.Span
+}
+
+// EffectiveSpanX/EffectiveSpanY are RawSpanX/RawSpanY if set, else Type's
+// own default.
+func (w Widget) EffectiveSpanX() int {
+	if x := w.RawSpanX(); x > 0 {
+		return x
+	}
+	return w.Type.defaultSpan()
+}
+
+func (w Widget) EffectiveSpanY() int {
+	if y := w.RawSpanY(); y > 0 {
+		return y
 	}
 	return w.Type.defaultSpan()
 }
@@ -166,8 +230,20 @@ func (w Widget) Validate() error {
 	if !w.Type.valid() {
 		return fmt.Errorf("dashboard widget: unknown type %q", w.Type)
 	}
-	if w.Span < 0 || w.Span > maxSpan {
-		return fmt.Errorf("dashboard widget %q (%s): span %d out of range (1-%d, or 0 for the type's default)", w.Title, w.Type, w.Span, maxSpan)
+	if w.Span < 0 || w.Span > MaxSpan {
+		return fmt.Errorf("dashboard widget %q (%s): span %d out of range (1-%d, or 0 for the type's default)", w.Title, w.Type, w.Span, MaxSpan)
+	}
+	if w.SpanX < 0 || w.SpanX > MaxSpan {
+		return fmt.Errorf("dashboard widget %q (%s): span_x %d out of range (1-%d, or 0 for the type's default)", w.Title, w.Type, w.SpanX, MaxSpan)
+	}
+	if w.SpanY < 0 || w.SpanY > MaxSpan {
+		return fmt.Errorf("dashboard widget %q (%s): span_y %d out of range (1-%d, or 0 for the type's default)", w.Title, w.Type, w.SpanY, MaxSpan)
+	}
+	if (w.Min == nil) != (w.Max == nil) {
+		return fmt.Errorf("dashboard widget %q (%s): min and max must both be set, or neither", w.Title, w.Type)
+	}
+	if w.Min != nil && w.Max != nil && *w.Min == *w.Max {
+		return fmt.Errorf("dashboard widget %q (%s): max (%v) must differ from min", w.Title, w.Type, *w.Max)
 	}
 	if len(w.Series) == 0 {
 		return fmt.Errorf("dashboard widget %q (%s): needs at least one series", w.Title, w.Type)

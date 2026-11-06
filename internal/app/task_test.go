@@ -40,26 +40,9 @@ func diskDef() *metric.Definition {
 			Type:    metric.CollectorShell,
 			Command: "irrelevant",
 		},
-		Metrics: map[string]metric.Measurement{
-			"total": {
-				Unit: "bytes", Type: metric.TypeGauge,
-			},
-			"used": {
-				Unit: "bytes", Type: metric.TypeGauge,
-				Display: &metric.Display{Widget: metric.WidgetBar, Scale: &metric.Scale{MaxRef: "total"}},
-			},
-			"used_percent": {
-				Unit: "percent", Type: metric.TypeGauge,
-				Display: &metric.Display{Widget: metric.WidgetGauge, Primary: true, Scale: &metric.Scale{Min: 0, Max: 100}, Label: "Disk Usage"},
-			},
-		},
 		Events: []metric.EventRule{
 			{Name: "disk.used_percent.warning", Measurement: "used_percent", Condition: metric.ConditionAbove, Threshold: 80, Severity: metric.SeverityWarning},
 			{Name: "disk.used_percent.critical", Measurement: "used_percent", Condition: metric.ConditionAbove, Threshold: 90, Severity: metric.SeverityCritical},
-			// A rule on "used" itself (a bar, not the primary gauge) so
-			// TestMetricTask_ResolvesDisplayIntoStore can confirm bars get
-			// zones too, not just gauges.
-			{Name: "disk.used.warning", Measurement: "used", Condition: metric.ConditionAbove, Threshold: 800, Severity: metric.SeverityWarning},
 		},
 	}
 }
@@ -68,7 +51,11 @@ func diskDef() *metric.Definition {
 // without importing time.Duration-wrapping boilerplate at every call site.
 func Duration(d time.Duration) metric.Duration { return metric.Duration{Duration: d} }
 
-func TestMetricTask_ResolvesDisplayIntoStore(t *testing.T) {
+// TestMetricTask_StoresRawMeasurements confirms Run populates the store
+// with exactly what the collector produced — key and value, nothing
+// else: no declared Unit/Type/Display/Scale exists any more to resolve
+// into a MeasurementView.
+func TestMetricTask_StoresRawMeasurements(t *testing.T) {
 	store := state.NewStore()
 	task := &MetricTask{
 		ServerName:      "s1",
@@ -88,73 +75,32 @@ func TestMetricTask_ResolvesDisplayIntoStore(t *testing.T) {
 	if len(snap) != 1 {
 		t.Fatalf("got %d servers, want 1", len(snap))
 	}
-	mv := snap[0].Metrics[0]
 	byKey := map[string]state.MeasurementView{}
-	for _, m := range mv.Measurements {
+	for _, m := range snap[0].Metrics[0].Measurements {
 		byKey[m.Key] = m
 	}
-
-	total := byKey["total"]
-	if total.Widget != "" || total.Scale != nil {
-		t.Errorf("total (no display block) = %+v, want zero-value widget/scale", total)
-	}
-
-	used := byKey["used"]
-	if used.Widget != metric.WidgetBar {
-		t.Errorf("used.Widget = %q, want bar", used.Widget)
-	}
-	if used.Scale == nil || used.Scale.Max != 1000 {
-		t.Fatalf("used.Scale = %+v, want max_ref 'total' resolved to 1000", used.Scale)
-	}
-	if frac := used.Scale.Fraction(used.Value); frac != 0.5 {
-		t.Errorf("used fraction = %v, want 0.5 (500/1000)", frac)
-	}
-	wantUsedZones := []state.Zone{
-		{From: 0, To: 800, Severity: ""},
-		{From: 800, To: 1000, Severity: metric.SeverityWarning},
-	}
-	if len(used.Zones) != len(wantUsedZones) {
-		t.Fatalf("used.Zones = %+v, want %+v (bars get zones too, not just gauges)", used.Zones, wantUsedZones)
-	}
-	for i := range wantUsedZones {
-		if used.Zones[i] != wantUsedZones[i] {
-			t.Errorf("used.Zones[%d] = %+v, want %+v", i, used.Zones[i], wantUsedZones[i])
+	for key, want := range map[string]float64{"total": 1000, "used": 500, "used_percent": 50} {
+		got, ok := byKey[key]
+		if !ok || got.Value != want {
+			t.Errorf("%s = %+v, want value %v", key, got, want)
+		}
+		if got.DisplayLabel() != key {
+			t.Errorf("%s.DisplayLabel() = %q, want %q (always just Key now)", key, got.DisplayLabel(), key)
 		}
 	}
 
-	pct := byKey["used_percent"]
-	if !pct.Primary {
-		t.Error("used_percent should be Primary")
-	}
-	if pct.Widget != metric.WidgetGauge {
-		t.Errorf("used_percent.Widget = %q, want gauge", pct.Widget)
-	}
-	if pct.DisplayLabel() != "Disk Usage" {
-		t.Errorf("used_percent.DisplayLabel() = %q, want %q (from display.label)", pct.DisplayLabel(), "Disk Usage")
-	}
-	if total.DisplayLabel() != "total" {
-		t.Errorf("total.DisplayLabel() = %q, want %q (falls back to Key with no label)", total.DisplayLabel(), "total")
-	}
-	wantZones := []state.Zone{
-		{From: 0, To: 80, Severity: ""},
-		{From: 80, To: 90, Severity: metric.SeverityWarning},
-		{From: 90, To: 100, Severity: metric.SeverityCritical},
-	}
-	if len(pct.Zones) != len(wantZones) {
-		t.Fatalf("got %d zones, want %d: %+v", len(pct.Zones), len(wantZones), pct.Zones)
-	}
-	for i := range wantZones {
-		if pct.Zones[i] != wantZones[i] {
-			t.Errorf("zone[%d] = %+v, want %+v", i, pct.Zones[i], wantZones[i])
-		}
+	// used_percent at 50% breaches nothing yet.
+	if sev := task.Events.CurrentSeverity("s1", "disk.used_percent"); sev != "" {
+		t.Errorf("severity = %q, want \"\" (50%% breaches nothing)", sev)
 	}
 }
 
 // TestMetricTask_PerInstanceMeasurements reproduces disk.yaml's per-volume
 // shape live, through the real Run path: a collector that discovers its
 // own instances at runtime and emits them instance-qualified
-// ("root.total"/"root.used"/..., "data.total"/"data.used"/...) against
-// one statically-declared "total"/"used"/"used_percent" schema.
+// ("root.total"/"root.used"/..., "data.total"/"data.used"/...) — one
+// declared event rule ("used_percent") still alarms each instance
+// independently via metric.SplitInstance's own baseKey/instance split.
 func TestMetricTask_PerInstanceMeasurements(t *testing.T) {
 	store := state.NewStore()
 	task := &MetricTask{
@@ -177,23 +123,8 @@ func TestMetricTask_PerInstanceMeasurements(t *testing.T) {
 	for _, m := range snap[0].Metrics[0].Measurements {
 		byKey[m.Key] = m
 	}
-
-	rootUsed := byKey["root.used"]
-	if rootUsed.Scale == nil || rootUsed.Scale.Max != 1000 {
-		t.Fatalf("root.used.Scale = %+v, want max_ref 'total' resolved against root's own total (1000), not data's (2000)", rootUsed.Scale)
-	}
-	dataUsed := byKey["data.used"]
-	if dataUsed.Scale == nil || dataUsed.Scale.Max != 2000 {
-		t.Fatalf("data.used.Scale = %+v, want max_ref 'total' resolved against data's own total (2000)", dataUsed.Scale)
-	}
-
-	rootPct := byKey["root.used_percent"]
-	if rootPct.DisplayLabel() != "Disk Usage (root)" {
-		t.Errorf("root.used_percent.DisplayLabel() = %q, want %q (instance-annotated)", rootPct.DisplayLabel(), "Disk Usage (root)")
-	}
-	dataPct := byKey["data.used_percent"]
-	if dataPct.DisplayLabel() != "Disk Usage (data)" {
-		t.Errorf("data.used_percent.DisplayLabel() = %q, want %q", dataPct.DisplayLabel(), "Disk Usage (data)")
+	if byKey["root.used"].Value != 500 || byKey["data.used"].Value != 1900 {
+		t.Fatalf("got root.used=%v data.used=%v, want 500/1900", byKey["root.used"].Value, byKey["data.used"].Value)
 	}
 
 	// root at 50% and data at 95% must alarm independently — data alone
@@ -203,35 +134,6 @@ func TestMetricTask_PerInstanceMeasurements(t *testing.T) {
 	}
 	if sev := task.Events.CurrentSeverity("s1", "disk.data.used_percent"); sev != metric.SeverityCritical {
 		t.Errorf("data severity = %q, want critical (95%% breaches the shared used_percent rule)", sev)
-	}
-}
-
-func TestMetricTask_MaxRefMissingDegradesToTextNotFailure(t *testing.T) {
-	store := state.NewStore()
-	def := diskDef()
-	task := &MetricTask{
-		ServerName:      "s1",
-		Def:             def,
-		Client:          fakeRunner{out: "used=500\nused_percent=50\n"}, // "total" missing this cycle
-		CollectInterval: 10 * time.Second,
-		Deadline:        5 * time.Second,
-		Events:          event.NewEngine(0),
-		Store:           store,
-	}
-
-	if err := task.Run(context.Background()); err != nil {
-		t.Fatalf("Run should not fail just because one measurement's max_ref sibling is absent: %v", err)
-	}
-
-	snap := store.Snapshot()
-	var used state.MeasurementView
-	for _, m := range snap[0].Metrics[0].Measurements {
-		if m.Key == "used" {
-			used = m
-		}
-	}
-	if used.Scale != nil {
-		t.Errorf("used.Scale = %+v, want nil (max_ref sibling absent this cycle)", used.Scale)
 	}
 }
 

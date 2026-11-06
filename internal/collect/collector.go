@@ -54,8 +54,9 @@ func (o Observation) FullName() string {
 }
 
 // Execute runs def's collector once against serverName via backend,
-// parses its output and returns one Observation per measurement the
-// definition declares that was actually present in the result. timeout
+// parses its output and returns one Observation per key the collector's
+// output actually produced this cycle — there's no declared measurement
+// list to check it against any more. timeout
 // overrides def.Timeout so callers can apply server-specific overrides
 // without mutating the shared definition. config is this server's
 // resolved collector parameters (metric default -> group -> server
@@ -98,23 +99,16 @@ func executeShell(ctx context.Context, runner Runner, serverName string, def *me
 	return observationsFrom(serverName, def, values), nil
 }
 
-// observationsFrom emits one Observation per key in values that resolves
-// against def.Metrics — either a direct match (the common case) or, for a
-// collector that discovers its own instances at runtime (disk.yaml's
-// per-volume stats: one declared "used_percent", a real "root_used_percent"
-// / "data_used_percent" per volume actually found this cycle),
-// Definition.ResolveMeasurement's instance-prefixed match. Anything in
-// values that resolves to neither — an unexpected line from the
-// collector's own output, a typo — is silently skipped, not an error:
-// matches the collector contract both executeShell and executeHTTP share,
-// a missing/unrecognized key just means no Observation for it this cycle.
+// observationsFrom emits one Observation per key in values, unfiltered —
+// no declared measurement list exists any more to check a key against,
+// so whatever the collector's own output actually produced this cycle
+// (executeShell's line-oriented "key=value" output, or executeHTTP's
+// auto-discovered top-level JSON numbers plus any Fields entries) simply
+// is the set of measurements.
 func observationsFrom(serverName string, def *metric.Definition, values map[string]float64) []Observation {
 	now := time.Now()
 	observations := make([]Observation, 0, len(values))
 	for key, val := range values {
-		if _, _, _, ok := def.ResolveMeasurement(key); !ok {
-			continue
-		}
 		observations = append(observations, Observation{
 			Server:    serverName,
 			Metric:    def.Name + "." + key,

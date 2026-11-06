@@ -13,9 +13,9 @@ collector:
   # No config: every real mounted filesystem is discovered each cycle —
   # no per-server path to set. Each measurement key is instance-qualified
   # with its mount point as a leading dot-segment: "root.used_percent",
-  # "data.used_percent" — metric.Definition.ResolveMeasurement splits on
-  # the *last* "." to resolve one declared "used_percent" against however
-  # many volumes a host actually has, so the mount-point segment itself
+  # "data.used_percent" — metric.SplitInstance splits on the *last* "."
+  # to pull the mount point out of "used_percent" against however many
+  # volumes a host actually has, so the mount-point segment itself
   # is sanitized to never contain a "." (nor "/", which this engine's own
   # "server/metric.measurement" naming also uses as a separator):
   # "/" -> "root", "/data" -> "data", "/var/log" -> "var_log" (leading
@@ -42,38 +42,6 @@ collector:
         print name ".free=" avail
         if (size > 0) print name ".used_percent=" (used / size * 100)
       }'
-metrics:
-  total:
-    unit: bytes
-    type: gauge
-  used:
-    unit: bytes
-    type: gauge
-    display:
-      widget: bar
-      label: Used
-      scale:
-        max_ref: total
-  free:
-    unit: bytes
-    type: gauge
-    display:
-      widget: bar
-      label: Free
-      scale:
-        max_ref: total
-  used_percent:
-    unit: percent
-    type: gauge
-    display:
-      # Plain bar, not the single headline gauge disk.yaml used to have:
-      # there's no one "primary" volume once a host can have several —
-      # every volume gets the same even treatment.
-      widget: bar
-      label: Used %
-      scale:
-        min: 0
-        max: 100
 events:
   - name: disk.used_percent.warning
     measurement: used_percent

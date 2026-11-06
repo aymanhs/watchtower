@@ -30,19 +30,6 @@ collector:
       enabled) echo "enabled=1" ;;
       *) echo "enabled=0" ;;
     esac
-metrics:
-  active:
-    unit: bool
-    type: gauge
-    display:
-      widget: dot
-      label: Active
-  enabled:
-    unit: bool
-    type: gauge
-    display:
-      widget: dot
-      label: Enabled
 events:
   - name: systemd.active.critical
     measurement: active

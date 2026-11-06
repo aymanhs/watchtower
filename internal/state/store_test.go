@@ -55,7 +55,7 @@ func TestStore_UpdateSuccess_BuildsServerAndMetricView(t *testing.T) {
 	s := NewStore()
 	now := time.Now()
 	s.UpdateSuccess("s1", "memory",
-		[]MeasurementView{{Key: "available", Value: 3e10, Unit: "bytes"}, {Key: "used", Value: 2e9, Unit: "bytes"}},
+		[]MeasurementView{{Key: "available", Value: 3e10}, {Key: "used", Value: 2e9}},
 		map[string]metric.Severity{"available": ""}, now)
 
 	snap := s.Snapshot()
@@ -95,7 +95,7 @@ func TestStore_MarkStale_PreservesLastKnownMeasurements(t *testing.T) {
 	s := NewStore()
 	now := time.Now()
 	s.UpdateSuccess("s1", "cpu",
-		[]MeasurementView{{Key: "load1", Value: 0.5, Unit: "load"}},
+		[]MeasurementView{{Key: "load1", Value: 0.5}},
 		map[string]metric.Severity{"load1": ""}, now)
 
 	s.MarkStale("s1", "cpu", "ssh: timed out", now.Add(time.Second))

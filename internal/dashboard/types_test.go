@@ -2,6 +2,8 @@ package dashboard
 
 import "testing"
 
+func ptr[T any](v T) *T { return &v }
+
 func TestWidget_Validate(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -29,9 +31,18 @@ func TestWidget_Validate(t *testing.T) {
 		{"unknown type", Widget{Type: "sparkline", Series: []SeriesRef{{Selector: "jumpbox/cpu.load1"}}}, true},
 		{"series with unparseable selector", Widget{Type: WidgetChart, Series: []SeriesRef{{Selector: "jumpbox-cpu"}}}, true},
 		{"series with empty selector", Widget{Type: WidgetChart, Series: []SeriesRef{{}}}, true},
-		{"explicit span ok", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Span: 2}, false},
-		{"span too large", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Span: 4}, true},
-		{"negative span", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Span: -1}, true},
+		{"explicit legacy span ok", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Span: 2}, false},
+		{"legacy span too large", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Span: MaxSpan + 1}, true},
+		{"negative legacy span", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Span: -1}, true},
+		{"explicit span_x/span_y ok", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, SpanX: 3, SpanY: 1}, false},
+		{"span_x too large", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, SpanX: MaxSpan + 1}, true},
+		{"span_y too large", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, SpanY: MaxSpan + 1}, true},
+		{"negative span_x", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, SpanX: -1}, true},
+		{"negative span_y", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, SpanY: -1}, true},
+		{"min/max both set ok", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Min: ptr(0.0), Max: ptr(100.0)}, false},
+		{"min without max rejected", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Min: ptr(0.0)}, true},
+		{"max without min rejected", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Max: ptr(100.0)}, true},
+		{"min equals max rejected", Widget{Type: WidgetGauge, Series: []SeriesRef{{Selector: "jumpbox/cpu.usage"}}, Min: ptr(5.0), Max: ptr(5.0)}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,20 +59,75 @@ func TestWidget_Validate(t *testing.T) {
 
 func TestWidget_EffectiveSpan(t *testing.T) {
 	cases := []struct {
-		w    Widget
-		want int
+		w     Widget
+		wantX int
+		wantY int
 	}{
-		{Widget{Type: WidgetChart}, 2},          // unset: chart's own default
-		{Widget{Type: WidgetBars}, 2},           // unset: bars' own default, same reasoning as chart
-		{Widget{Type: WidgetGauge}, 1},          // unset: everything else's default
-		{Widget{Type: WidgetChart, Span: 1}, 1}, // explicit override, smaller
-		{Widget{Type: WidgetGauge, Span: 2}, 2}, // explicit override, bigger
-		{Widget{Type: WidgetNumber, Span: 3}, 3},
+		{Widget{Type: WidgetChart}, 2, 2}, // unset: chart's own default, both directions
+		{Widget{Type: WidgetBars}, 2, 2},  // unset: bars' own default, same reasoning as chart
+		{Widget{Type: WidgetGauge}, 1, 1}, // unset: everything else's default
+		// SpanX/SpanY override independently — a tile need not be square.
+		{Widget{Type: WidgetChart, SpanX: 3, SpanY: 1}, 3, 1},
+		{Widget{Type: WidgetGauge, SpanX: 2}, 2, 1}, // only X set: Y still falls to the type default
+		{Widget{Type: WidgetGauge, SpanY: 2}, 1, 2}, // only Y set: X still falls to the type default
+		// The legacy square Span still applies equally to both when
+		// SpanX/SpanY themselves are unset.
+		{Widget{Type: WidgetNumber, Span: 3}, 3, 3},
+		// SpanX/SpanY always win over the legacy Span when both are present.
+		{Widget{Type: WidgetNumber, Span: 3, SpanX: 1}, 1, 3},
 	}
 	for _, tc := range cases {
-		if got := tc.w.EffectiveSpan(); got != tc.want {
-			t.Errorf("EffectiveSpan(%+v) = %d, want %d", tc.w, got, tc.want)
+		if gotX := tc.w.EffectiveSpanX(); gotX != tc.wantX {
+			t.Errorf("EffectiveSpanX(%+v) = %d, want %d", tc.w, gotX, tc.wantX)
 		}
+		if gotY := tc.w.EffectiveSpanY(); gotY != tc.wantY {
+			t.Errorf("EffectiveSpanY(%+v) = %d, want %d", tc.w, gotY, tc.wantY)
+		}
+	}
+}
+
+func TestWidget_RawSpan(t *testing.T) {
+	cases := []struct {
+		w     Widget
+		wantX int
+		wantY int
+	}{
+		{Widget{}, 0, 0}, // nothing ever set: "auto", not the type's default
+		{Widget{SpanX: 2, SpanY: 3}, 2, 3},
+		{Widget{Span: 2}, 2, 2}, // legacy fallback, both directions
+		{Widget{Span: 2, SpanX: 4}, 4, 2},
+	}
+	for _, tc := range cases {
+		if gotX := tc.w.RawSpanX(); gotX != tc.wantX {
+			t.Errorf("RawSpanX(%+v) = %d, want %d", tc.w, gotX, tc.wantX)
+		}
+		if gotY := tc.w.RawSpanY(); gotY != tc.wantY {
+			t.Errorf("RawSpanY(%+v) = %d, want %d", tc.w, gotY, tc.wantY)
+		}
+	}
+}
+
+func TestWidget_Scale(t *testing.T) {
+	cases := []struct {
+		name    string
+		w       Widget
+		wantMin float64
+		wantMax float64
+		wantOK  bool
+	}{
+		{"neither set", Widget{}, 0, 0, false},
+		{"both set", Widget{Min: ptr(0.0), Max: ptr(100.0)}, 0, 100, true},
+		{"only min set", Widget{Min: ptr(0.0)}, 0, 0, false},
+		{"only max set", Widget{Max: ptr(100.0)}, 0, 0, false},
+		{"min equals max", Widget{Min: ptr(5.0), Max: ptr(5.0)}, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			min, max, ok := tc.w.Scale()
+			if ok != tc.wantOK || (ok && (min != tc.wantMin || max != tc.wantMax)) {
+				t.Errorf("Scale() = (%v, %v, %v), want (%v, %v, %v)", min, max, ok, tc.wantMin, tc.wantMax, tc.wantOK)
+			}
+		})
 	}
 }
 

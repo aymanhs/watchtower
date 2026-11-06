@@ -35,31 +35,33 @@ func testDef() *metric.Definition {
 			Type:    metric.CollectorShell,
 			Command: "irrelevant for this test",
 		},
-		Metrics: map[string]metric.Measurement{
-			"used": {Unit: "bytes", Type: metric.TypeGauge},
-			"free": {Unit: "bytes", Type: metric.TypeGauge},
-		},
 	}
 }
 
-func TestExecute_ParsesKnownMeasurements(t *testing.T) {
+// TestExecute_EmitsEveryKey: there's no declared measurement list any
+// more to filter collector output against — every key the collector's
+// own output actually produces becomes an Observation, full stop.
+func TestExecute_EmitsEveryKey(t *testing.T) {
 	runner := fakeRunner{out: "used=100\nfree=200\nextra=999\n"}
 	obs, err := Execute(context.Background(), runner, "server1", testDef(), 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(obs) != 2 {
-		t.Fatalf("got %d observations, want 2 (unknown 'extra' key must be ignored)", len(obs))
+	if len(obs) != 3 {
+		t.Fatalf("got %d observations, want 3 (used, free, extra — nothing filtered)", len(obs))
 	}
 	byName := map[string]float64{}
 	for _, o := range obs {
 		byName[o.FullName()] = o.Value
 	}
-	if byName["server1/memory.used"] != 100 {
-		t.Errorf("server1/memory.used = %v, want 100", byName["server1/memory.used"])
-	}
-	if byName["server1/memory.free"] != 200 {
-		t.Errorf("server1/memory.free = %v, want 200", byName["server1/memory.free"])
+	for name, want := range map[string]float64{
+		"server1/memory.used":  100,
+		"server1/memory.free":  200,
+		"server1/memory.extra": 999,
+	} {
+		if byName[name] != want {
+			t.Errorf("%s = %v, want %v", name, byName[name], want)
+		}
 	}
 }
 
@@ -92,27 +94,29 @@ func TestExecute_MissingMeasurementSkippedNotZero(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(obs) != 1 {
-		t.Fatalf("got %d observations, want 1 (missing 'free' must be skipped, not zeroed)", len(obs))
+		t.Fatalf("got %d observations, want 1 (nothing in output but 'used')", len(obs))
 	}
 	if obs[0].FullName() != "server1/memory.used" {
 		t.Errorf("got %q, want server1/memory.used", obs[0].FullName())
 	}
 }
 
-// TestExecute_ResolvesPerInstanceMeasurements reproduces disk.yaml's
-// per-volume shape: one declared "total"/"used" pair, a collector that
-// discovers its own instances at runtime (df over however many real
-// mounts exist) and emits them instance-qualified ("root.total",
-// "data.used") rather than under the declared keys literally.
-func TestExecute_ResolvesPerInstanceMeasurements(t *testing.T) {
+// TestExecute_PerInstanceKeysPassThrough reproduces disk.yaml's
+// per-volume shape: a collector that discovers its own instances at
+// runtime (df over however many real mounts exist) emits them
+// instance-qualified ("root.used", "data.used") — Execute itself doesn't
+// decompose or care about this at all (that's metric.SplitInstance's
+// job, used by the event engine and the dashboard selector, not here);
+// every key, instance-qualified or not, just becomes an Observation.
+func TestExecute_PerInstanceKeysPassThrough(t *testing.T) {
 	def := testDef()
-	runner := fakeRunner{out: "root.used=100\nroot.free=200\ndata.used=300\nunrelated_noise=1\n"}
+	runner := fakeRunner{out: "root.used=100\nroot.free=200\ndata.used=300\n"}
 	obs, err := Execute(context.Background(), runner, "server1", def, 5*time.Second, nil)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if len(obs) != 3 {
-		t.Fatalf("got %d observations, want 3 (root.used, root.free, data.used — unrelated_noise ignored)", len(obs))
+		t.Fatalf("got %d observations, want 3 (root.used, root.free, data.used)", len(obs))
 	}
 	byName := map[string]float64{}
 	for _, o := range obs {

@@ -1,6 +1,5 @@
 // This file is the dashboard: a user-composed widget grid, decoupled
-// both from metric.Display's auto-rendering (metricLine in view.go) and
-// — now — from the sidebar's server selection. A dashboard lives in its
+// from the sidebar's server selection. A dashboard lives in its
 // own YAML file (data/dashboards/, see internal/dashboard.Store), named
 // and picked independently of any one server (dashboardPicker); add/
 // remove here write straight back to it via dashStore.Save, so
@@ -24,7 +23,6 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"aymanhs/watchtower/internal/dashboard"
-	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
 	"aymanhs/watchtower/internal/storage"
 )
@@ -55,14 +53,16 @@ func applyFormat(format string, value float64) string {
 }
 
 // seriesValue is one series' number, formatted the way it was asked to
-// be: ref.Format if the widget set one (dashboard-only, printf-style,
-// always wins), else the measurement's own formatValue (unit +
-// display.format) exactly as every non-dashboard presentation renders it.
+// be: ref.Format if the series set one (printf-style, always wins), else
+// the plain two-decimal default (formatValue) — there's no
+// per-measurement Unit/Format left to fall back to instead (see
+// internal/metric's package doc); a series wanting anything else now
+// always says so itself.
 func seriesValue(ref dashboard.SeriesRef, mv state.MeasurementView) string {
 	if ref.Format != "" {
 		return applyFormat(ref.Format, mv.Value)
 	}
-	return formatValue(mv.Unit, mv.Format, mv.Value)
+	return formatValue(mv.Value)
 }
 
 // tileWidth/tileHeight are one base cell size every widget is sized in
@@ -80,33 +80,50 @@ const (
 	gridGap    = float32(12)
 )
 
-// tileSize returns the pixel size a tile spanning span cells each side
-// takes, cells plus the gaps between them.
-func tileSize(span int) (w, h float32) {
-	s := float32(span)
-	return tileWidth*s + gridGap*(s-1), tileHeight*s + gridGap*(s-1)
+// tileSize returns the pixel size a tile spanning spanX by spanY cells
+// takes, cells plus the gaps between them, each direction independent.
+func tileSize(spanX, spanY int) (w, h float32) {
+	x, y := float32(spanX), float32(spanY)
+	return tileWidth*x + gridGap*(x-1), tileHeight*y + gridGap*(y-1)
+}
+
+// minSpan is the smaller of spanX/spanY — used wherever a tile's own
+// content is inherently round or square (a gauge's dial, a pie, a plain
+// number's font size) and so scales off whichever dimension is tighter,
+// rather than overflowing a non-square tile in the larger direction.
+func minSpan(spanX, spanY int) int {
+	if spanX < spanY {
+		return spanX
+	}
+	return spanY
 }
 
 // Add-widget modal draft state — package-level for the same reason
 // bottomMode/selectedServer are: one window, nowhere else for "what's
 // being typed into the open dialog right now" to live between frames.
 var (
-	addWidgetOpen        = false
-	addWidgetErr         = ""
-	addWidgetType        = dashboard.WidgetChart
-	addWidgetTitle       = ""
-	addWidgetSinglePick  = "" // gauge/number: the Select itself is the one series
-	addWidgetNewPick     = "" // chart/pie: the "available measurements" Select, before "Add" appends it
-	addWidgetSeriesPicks []string
-	// addWidgetFormat is the single series' optional SeriesRef.Format —
-	// only exposed for gauge/number, which have exactly one series to
-	// apply it to; a pie/chart's several series would each want their
-	// own, which the "pick, then Add" multi-series flow has no per-item
-	// editing for yet (hand-edit the YAML's series[].format for those).
-	addWidgetFormat = ""
-	// addWidgetSpan is the picked dashboard.Widget.Span, 0 meaning "auto"
-	// — the type's own default, same as an unset Span in YAML.
-	addWidgetSpan = 0
+	addWidgetOpen  = false
+	addWidgetErr   = ""
+	addWidgetType  = dashboard.WidgetChart
+	addWidgetTitle = ""
+	// addWidgetSeriesPicks is every series this widget will have — an
+	// editable ui.Table, one row per entry, each cell bound straight to
+	// that entry's own Selector/Label/Format field (&addWidgetSeriesPicks[row].X),
+	// so there's no separate staging row or "click edit to load it"
+	// step the way an Add/Update/Cancel flow needed: every row is
+	// always live-editable, every field always visible, the same way
+	// for every widget type (gauge/number included — there used to be a
+	// single-pick shortcut just for them; unified since a gauge with
+	// 2+ series, already supported at render time (resolveTileSeries,
+	// any widget type adapts to N matches), was actually buildable from
+	// the GUI too, not just by hand-editing YAML).
+	addWidgetSeriesPicks []dashboard.SeriesRef
+	// addWidgetSpanX/addWidgetSpanY are the picked dashboard.Widget.SpanX/
+	// SpanY, each 0 meaning "auto" — the type's own default, same as an
+	// unset SpanX/SpanY in YAML. float64 because ui.NumberInput edits a
+	// *float64; always a whole number in [0, maxSpan] in practice.
+	addWidgetSpanX = float64(0)
+	addWidgetSpanY = float64(0)
 	// editWidgetIdx is -1 while the modal is adding a brand new widget,
 	// or the index (into the selected server's own Dashboard slice)
 	// being edited in place — confirmAddWidget checks this to decide
@@ -366,12 +383,61 @@ func reorderWidget(dashStore *dashboard.Store, d *dashboard.Dashboard, fromIdx, 
 	}
 }
 
-// headerButtonSize is how big a widget card's own header buttons
-// (edit/maximize/remove) are — deliberately smaller than this app's
-// ordinary buttons: three of them now share one header row, and at the
-// original size (tuned back when there were only two) they'd crowd out
-// the title on anything but the widest tile.
-const headerButtonSize = 9.0
+// squareButtonSize/squareIconSize are every small per-row action
+// button's fixed size throughout this file — a widget card's own
+// header (edit/maximize/remove) and a series-picker row's own
+// (edit/remove) all use squareIconButton below instead of each sizing
+// itself from its own label/icon, which is what made some of them
+// visibly bigger than others, and not even a consistent size next to
+// each other, before this existed.
+const (
+	squareButtonSize = float32(20)
+	squareIconSize   = float32(11)
+)
+
+// squareIconButton is one small, fixed-size square button showing icon
+// — every per-row action in this file (a widget card's edit/maximize/
+// remove, a series-picker row's edit/remove) is one of these, so they
+// always render as one same-sized set of controls regardless of which
+// icon or how long its tooltip is. Returns the Element so the caller
+// chains .Clicked() same as any other button.
+//
+// Padding(2) overrides mygo's own default Button padding — asymmetric
+// (more horizontal than vertical, styleButton's own t.Space(1.5)/
+// t.Space(3.5), sized for a text label) and, combined with a button's
+// own Shrink(0), wide enough on its own to push the rendered button past
+// Size()'s square request on the horizontal axis alone. A small, equal
+// Padding on every side is what actually makes the box — and the icon
+// centered inside it — square.
+func squareIconButton(c *ui.Context, key string, icon *ui.SVG, tooltip string) ui.Element {
+	return ui.Button(c.Key(key), "").Padding(2).Size(squareButtonSize, squareButtonSize).Tooltip(tooltip).
+		Children(func() { ui.Icon(c, icon).FontSize(squareIconSize) })
+}
+
+// spanControl is one axis of the add-widget modal's own Width/Height
+// picker: a plain read-only number (or "Auto" at 0) next to a Stepper's
+// +/- arrows, AppKit-style — not ui.NumberInput, which rendered only one
+// shared-looking +/- pair for both axes when two sat side by side in the
+// same row (a mygo quirk, not an identity bug on this file's side: each
+// Stepper here is bound to its own distinct *float64, same as the two
+// NumberInputs were). Two separate calls, each nested in its own Column,
+// give each axis a genuinely different position in the render tree, so
+// — same as the two label/format table cells elsewhere in this file —
+// there's never any ambiguity about which pair of arrows adjusts which
+// value, without needing an explicit Key.
+func spanControl(c *ui.Context, t *ui.Theme, label string, value *float64) {
+	ui.Column(c).Gap(2).Children(func() {
+		ui.Text(c, label).FontSize(9).TextColor(t.TextMuted)
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			display := "Auto"
+			if *value > 0 {
+				display = fmt.Sprintf("%.0f", *value)
+			}
+			ui.Text(c, display).FontSize(12).Width(28)
+			ui.Stepper(c, value, 0, float64(dashboard.MaxSpan), 1)
+		})
+	})
+}
 
 // dragWidgetIdx is a dashboard widget's index while it's being dragged —
 // a named type, not a bare int, so this drag/drop pairing can't
@@ -382,40 +448,36 @@ type dragWidgetIdx int
 // widgetCard is the shared tile chrome every widget type uses: a header
 // row (title, edit, maximize/restore, remove) and body below it, plus
 // drag-to-reorder — one place that look lives, not four slightly
-// different copies. Sized from span cells normally (and given that span
-// in the grid, via ColumnSpan/RowSpan); Fill()s the whole pane instead
-// when maximized, with no span chained — a maximized tile isn't a child
-// of ui.Grid at all (dashboardGrid renders it alone, in a plain Box), so
-// ColumnSpan/RowSpan wouldn't mean anything there, and dragging a
-// maximized tile (there's nothing else visible to drop it on) is
+// different copies. Sized from spanX/spanY cells normally (and given
+// that span in the grid, via ColumnSpan/RowSpan); Fill()s the whole pane
+// instead when maximized, with no span chained — a maximized tile isn't
+// a child of ui.Grid at all (dashboardGrid renders it alone, in a plain
+// Box), so ColumnSpan/RowSpan wouldn't mean anything there, and dragging
+// a maximized tile (there's nothing else visible to drop it on) is
 // disabled the same way.
-func widgetCard(c *ui.Context, key string, idx, span int, title string, maximized bool, onEdit, onRemove, onToggleMaximize func(), onReorder func(fromIdx int), body func()) ui.Element {
+func widgetCard(c *ui.Context, key string, idx, spanX, spanY int, title string, maximized bool, onEdit, onRemove, onToggleMaximize func(), onReorder func(fromIdx int), body func()) ui.Element {
 	t := c.Theme()
 	card := ui.Column(c).Background(t.Surface).Radius(8).Padding(10).Gap(6)
 	if maximized {
 		card = card.Fill()
 	} else {
-		w, h := tileSize(span)
+		w, h := tileSize(spanX, spanY)
 		card = card.Size(w, h)
 	}
 	card = card.Children(func() {
 		ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, title).FontSize(11).Bold().TextColor(t.TextMuted).Grow(1).NoWrap()
-			if ui.Button(c.Key("widget-edit-"+key), "").FontSize(headerButtonSize).Tooltip("Edit widget").
-				Children(func() { ui.Icon(c, editIcon).FontSize(headerButtonSize) }).
-				Clicked() {
+			if squareIconButton(c, "widget-edit-"+key, editIcon, "Edit widget").Clicked() {
 				onEdit()
 			}
 			maxIcon, maxTooltip := maximizeIcon, "Maximize"
 			if maximized {
 				maxIcon, maxTooltip = restoreIcon, "Restore"
 			}
-			if ui.Button(c.Key("widget-maximize-"+key), "").FontSize(headerButtonSize).Tooltip(maxTooltip).
-				Children(func() { ui.Icon(c, maxIcon).FontSize(headerButtonSize) }).
-				Clicked() {
+			if squareIconButton(c, "widget-maximize-"+key, maxIcon, maxTooltip).Clicked() {
 				onToggleMaximize()
 			}
-			if ui.Button(c.Key("widget-remove-"+key), "×").FontSize(headerButtonSize).Tooltip("Remove widget").Clicked() {
+			if squareIconButton(c, "widget-remove-"+key, removeIcon, "Remove widget").Clicked() {
 				onRemove()
 			}
 		})
@@ -424,8 +486,8 @@ func widgetCard(c *ui.Context, key string, idx, span int, title string, maximize
 	if maximized {
 		return card
 	}
-	if span > 1 {
-		card = card.ColumnSpan(span).RowSpan(span)
+	if spanX > 1 || spanY > 1 {
+		card = card.ColumnSpan(spanX).RowSpan(spanY)
 	}
 	// Drag to reorder: this tile is both a source (carries its own
 	// index) and a target (accepts another tile's index) — a highlight
@@ -555,8 +617,8 @@ const (
 func numberTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("number-%d", idx)
-	span := w.EffectiveSpan()
-	widgetCard(c, key, idx, span, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
+	spanX, spanY := w.EffectiveSpanX(), w.EffectiveSpanY()
+	widgetCard(c, key, idx, spanX, spanY, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
 		items := resolveTileSeries(w, all)
 		switch len(items) {
 		case 0:
@@ -564,6 +626,7 @@ func numberTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx i
 				ui.Text(c, "not reporting").FontSize(11).TextColor(t.TextMuted)
 			})
 		case 1:
+			span := minSpan(spanX, spanY)
 			fontSize := float32(40)
 			if maximized {
 				fontSize = 90
@@ -598,32 +661,37 @@ func numberTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx i
 func gaugeTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("gauge-%d", idx)
-	span := w.EffectiveSpan()
-	widgetCard(c, key, idx, span, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
+	spanX, spanY := w.EffectiveSpanX(), w.EffectiveSpanY()
+	widgetCard(c, key, idx, spanX, spanY, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
 		items := resolveTileSeries(w, all)
-		switch len(items) {
-		case 0:
+		// A gauge's scale is the widget's own Min/Max now — set once when
+		// building it, not resolved per-measurement (internal/metric
+		// declares no per-measurement Scale any more; see its package
+		// doc) — so every match in this one widget shares the same
+		// dial range regardless of which server/instance it came from.
+		min, max, hasScale := w.Scale()
+		switch {
+		case len(items) == 0:
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 				ui.Text(c, "not reporting").FontSize(11).TextColor(t.TextMuted)
 			})
-		case 1:
+		case !hasScale:
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				ui.Text(c, "no scale configured — set min/max when editing this widget").FontSize(11).TextColor(t.TextMuted)
+			})
+		case len(items) == 1:
 			mv := items[0].match.Measurement
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-				if mv.Scale == nil {
-					// A dashboard gauge widget never invents a scale — it
-					// only shows one if the measurement's own metric.yaml
-					// display block already resolved one (same rule
-					// metricLine's own gauge/bar branch follows).
-					ui.Text(c, "no scale configured for this measurement").FontSize(11).TextColor(t.TextMuted)
-					return
-				}
 				// Base diameter fills most of a 1x1 tile's own body
 				// (tileHeight minus the header and padding) instead of
 				// leaving a ring of empty space around a small dial —
 				// stroke width and center-label size are already
 				// proportional to diameter (pressureGauge, gauge.go), so
 				// scaling this up alone can't make the label collide with
-				// the ring.
+				// the ring. Scales off minSpan, not either dimension
+				// alone, so a non-square tile's dial still fits within
+				// its tighter side instead of overflowing it.
+				span := minSpan(spanX, spanY)
 				diameter := float32(140)
 				switch {
 				case maximized:
@@ -631,22 +699,18 @@ func gaugeTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx in
 				case span > 1:
 					diameter = 140 * float32(span)
 				}
-				pressureGauge(c, *mv.Scale, mv.Value, mv.Zones, statusColor(t, items[0].match.MetricStatus), diameter, seriesValue(items[0].ref, mv))
+				scale := state.Scale{Min: min, Max: max}
+				pressureGauge(c, scale, mv.Value, statusColor(t, items[0].match.MetricStatus), diameter, seriesValue(items[0].ref, mv))
 			})
 		default:
 			qualify := needsServerQualifier(items)
+			scale := state.Scale{Min: min, Max: max}
 			ui.Scroll(c).Fill().Children(func() {
 				ui.Row(c).Wrap().Gap(16).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 					for _, it := range items {
 						mv := it.match.Measurement
 						ui.Column(c).Gap(4).AlignItems(ui.Center).Children(func() {
-							if mv.Scale == nil {
-								ui.Box(c).Size(multiDiameter, multiDiameter).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-									ui.Text(c, "no scale").FontSize(9).TextColor(t.TextMuted)
-								})
-							} else {
-								pressureGauge(c, *mv.Scale, mv.Value, mv.Zones, statusColor(t, it.match.MetricStatus), multiDiameter, seriesValue(it.ref, mv))
-							}
+							pressureGauge(c, scale, mv.Value, statusColor(t, it.match.MetricStatus), multiDiameter, seriesValue(it.ref, mv))
 							ui.Text(c, matchLabel(it, qualify)).FontSize(9).TextColor(t.TextMuted).NoWrap()
 						})
 					}
@@ -659,8 +723,8 @@ func gaugeTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx in
 func pieTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("pie-%d", idx)
-	span := w.EffectiveSpan()
-	widgetCard(c, key, idx, span, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
+	spanX, spanY := w.EffectiveSpanX(), w.EffectiveSpanY()
+	widgetCard(c, key, idx, spanX, spanY, widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
 		items := resolveTileSeries(w, all)
 		qualify := needsServerQualifier(items)
 		colors := seriesColors(t)
@@ -678,14 +742,11 @@ func pieTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int,
 				continue
 			}
 			label := matchLabel(it, qualify)
+			// seriesValue's own default (no ref.Format set) is already
+			// the plain two-decimal formatValue, with no unit-driven
+			// auto-scaling left to override — exactly a pie slice's own
+			// "share of a whole" formatting, no special-casing needed.
 			formatted := seriesValue(it.ref, mv)
-			if it.ref.Format == "" {
-				// Default pie formatting (no ref.Format set) is plain
-				// counts, not whatever unit the measurement happens to
-				// declare — a pie slice is a share of a whole, not a
-				// standalone reading.
-				formatted = formatValue("count", metric.FormatDefault, mv.Value)
-			}
 			slices = append(slices, slice{label: label, formatted: formatted, value: mv.Value, color: colors[i%len(colors)]})
 			total += mv.Value
 		}
@@ -699,6 +760,7 @@ func pieTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int,
 			// Base diameter fills most of a 1x1 tile's own height,
 			// same reasoning as the gauge's — a small pie with a ring
 			// of empty space around it was the actual complaint.
+			span := minSpan(spanX, spanY)
 			diameter := float32(130)
 			switch {
 			case maximized:
@@ -747,16 +809,16 @@ const (
 // wildcard/cluster selector matches), each bar labeled by barLabel
 // (preferring the resolver's own Match.Instance — a mount point, say —
 // over the measurement's generic one) and sized proportionally: against
-// the measurement's own Scale when it has one (the common case — most
-// per-instance measurements worth bar-charting, like used_percent,
-// already declare a 0-100 scale), or relative to the largest value among
-// this tile's own scale-less matches otherwise, so bars without an
-// absolute reference still show meaningful relative proportions instead
-// of all reading as either empty or full.
+// the widget's own Min/Max (w.Scale()) when set — the same scale every
+// bar in the tile shares, there's no per-measurement scale any more (see
+// internal/metric's package doc) — or, with no widget scale configured,
+// relative to the largest value among this tile's own matches instead,
+// so bars without an absolute reference still show meaningful relative
+// proportions instead of all reading as either empty or full.
 func barsTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("bars-%d", idx)
-	widgetCard(c, key, idx, w.EffectiveSpan(), widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
+	widgetCard(c, key, idx, w.EffectiveSpanX(), w.EffectiveSpanY(), widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
 		items := resolveTileSeries(w, all)
 		if len(items) == 0 {
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -765,16 +827,19 @@ func barsTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int
 			return
 		}
 		qualify := needsServerQualifier(items)
+		min, max, hasScale := w.Scale()
 		var maxNoScale float64
-		for _, it := range items {
-			if it.match.Measurement.Scale == nil && it.match.Measurement.Value > maxNoScale {
-				maxNoScale = it.match.Measurement.Value
+		if !hasScale {
+			for _, it := range items {
+				if it.match.Measurement.Value > maxNoScale {
+					maxNoScale = it.match.Measurement.Value
+				}
 			}
 		}
 		ui.Scroll(c).Fill().Children(func() {
 			ui.Column(c).Gap(barGap).Padding(2).Children(func() {
 				for _, it := range items {
-					barRow(c, it, qualify, maxNoScale)
+					barRow(c, it, qualify, hasScale, min, max, maxNoScale)
 				}
 			})
 		})
@@ -782,13 +847,13 @@ func barsTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int
 }
 
 // barRow draws one bar: label, track+fill, formatted value.
-func barRow(c *ui.Context, it resolvedSeries, qualify bool, maxNoScale float64) {
+func barRow(c *ui.Context, it resolvedSeries, qualify bool, hasScale bool, min, max float64, maxNoScale float64) {
 	t := c.Theme()
 	mv := it.match.Measurement
 	var frac float32
 	switch {
-	case mv.Scale != nil:
-		frac = mv.Scale.Fraction(mv.Value)
+	case hasScale:
+		frac = state.Scale{Min: min, Max: max}.Fraction(mv.Value)
 	case maxNoScale > 0:
 		frac = float32(mv.Value / maxNoScale)
 	}
@@ -854,7 +919,7 @@ func buildPieSlice(cx, cy, r float32, startDeg, sweepDeg float64) *ui.Path {
 func chartTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, history *storage.Store, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("chart-%d", idx)
-	widgetCard(c, key, idx, w.EffectiveSpan(), widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
+	widgetCard(c, key, idx, w.EffectiveSpanX(), w.EffectiveSpanY(), widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
 		if history == nil {
 			ui.Text(c, "no history store").FontSize(11).TextColor(t.TextMuted)
 			return
@@ -863,15 +928,13 @@ func chartTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, histor
 		qualify := needsServerQualifier(resolved)
 		var items []chartItem
 		for _, it := range resolved {
-			mv := it.match.Measurement
-			mv.Label = matchLabel(it, qualify)
 			// HistoryKey is this match's own internal/storage key
 			// (Server+"/"+Metric+"."+Measurement.Key) — a selector
 			// resolving to several servers draws one line per match,
 			// each queried under its own server's history, not one
 			// shared key the way a literal single-server selector's
 			// always been.
-			items = append(items, chartItem{mv: mv, historyKey: it.match.HistoryKey})
+			items = append(items, chartItem{label: matchLabel(it, qualify), historyKey: it.match.HistoryKey})
 		}
 		if len(items) == 0 {
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -909,11 +972,9 @@ func resetWidgetDraft() {
 	addWidgetErr = ""
 	addWidgetType = dashboard.WidgetChart
 	addWidgetTitle = ""
-	addWidgetSinglePick = ""
-	addWidgetNewPick = ""
 	addWidgetSeriesPicks = nil
-	addWidgetFormat = ""
-	addWidgetSpan = 0
+	addWidgetSpanX = 0
+	addWidgetSpanY = 0
 	editWidgetIdx = -1
 }
 
@@ -921,48 +982,49 @@ func resetWidgetDraft() {
 // pre-filled from w and in "edit this one in place" mode
 // (confirmAddWidget replaces index idx instead of appending) — reusing
 // one modal/one draft-state/one confirm path for both add and edit, not
-// a second editor built separately. A SeriesRef's Selector is already
-// exactly the picker's own option text (seriesRefFromPick's inverse is
-// just itself now that a pick isn't qualified against "whichever
-// server's pane is open" — there is no such thing anymore), so no
-// stripping/requalifying is needed the way there was before dashboards
-// stopped being per-server.
+// a second editor built separately. w.Series copies straight into
+// addWidgetSeriesPicks — every widget type edits its series list the
+// same way now, no more gauge/number-only single-pick shortcut.
 func openWidgetEditor(idx int, w dashboard.Widget) {
 	resetWidgetDraft()
 	editWidgetIdx = idx
 	addWidgetType = w.Type
 	addWidgetTitle = w.Title
-	addWidgetSpan = w.Span
-	single := w.Type == dashboard.WidgetGauge || w.Type == dashboard.WidgetNumber
-	if single && len(w.Series) > 0 {
-		addWidgetSinglePick = w.Series[0].Selector
-		addWidgetFormat = w.Series[0].Format
-	} else {
-		for _, s := range w.Series {
-			addWidgetSeriesPicks = append(addWidgetSeriesPicks, s.Selector)
-		}
-	}
+	addWidgetSpanX = float64(w.RawSpanX())
+	addWidgetSpanY = float64(w.RawSpanY())
+	addWidgetSeriesPicks = append([]dashboard.SeriesRef(nil), w.Series...)
 	addWidgetOpen = true
 }
 
-// availableSeries lists selector suggestions the picker offers, sorted:
-// a literal "server/metric.measurement" for every measurement every
-// server in all is currently reporting; a wildcard "*/metric.measurement"
-// for any (metric, measurement) pair that more than one server reports;
-// and a "cluster:name/metric.measurement" for any pair reported by at
-// least one member of a named cluster. These are suggestions for an
-// Autocomplete field, not the only selectors it'll accept — the field
-// itself takes any text, so a more specific glob (a partial server name,
-// an instance segment) or a cluster this function didn't think to
-// suggest still works, just typed by hand instead of clicked. Resolved
-// from the live snapshot, same as the rest of this file: a widget can
-// only be suggested a measurement that actually exists right now, not
-// guessed from static YAML the GUI would otherwise need a Registry
-// reference to read.
+// availableSeries lists selector suggestions the picker offers, sorted —
+// the full cartesian product of every position a selector pattern has,
+// each varied independently, for every measurement actually observed:
+//
+//   - server: the literal server name, "*", and (if it's in one)
+//     "cluster:itsCluster"
+//   - metric: the literal metric name, and "*"
+//   - instance (only for a per-instance measurement — disk's
+//     "root.used_percent", decomposing at the last "." into instance
+//     "root", baseKey "used_percent", the same split
+//     metric.Definition.ResolveMeasurement uses): the literal instance,
+//     "*", and omitted entirely (selector.Match's own instance-agnostic
+//     2-segment form)
+//
+// Generating every combination, not just one wildcarded position at a
+// time, is deliberate: ui.Autocomplete matches by substring, so typing
+// "*/disk.*" toward "every volume on every server" needs a suggestion
+// that already has "*" in both the server and instance slots at once —
+// a suggestion set that only ever wildcards one position can't be typed
+// toward from there, no matter how many single-wildcard variants it
+// offers. These are still only suggestions, not the only selectors an
+// Autocomplete field accepts — a pattern this function didn't think to
+// generate (there's no cluster+instance-wildcard combination, say) still
+// works fine typed by hand. Resolved from the live snapshot, same as the
+// rest of this file: a widget can only be suggested a measurement that
+// actually exists right now, not guessed from static YAML the GUI would
+// otherwise need a Registry reference to read.
 func availableSeries(all []state.ServerView) []string {
 	seen := make(map[string]bool)
-	serversFor := make(map[string]map[string]bool)  // "metric.measurement" -> set of servers reporting it
-	clustersFor := make(map[string]map[string]bool) // "metric.measurement" -> set of clusters reporting it
 	var out []string
 	add := func(sel string) {
 		if !seen[sel] {
@@ -970,32 +1032,34 @@ func availableSeries(all []state.ServerView) []string {
 			out = append(out, sel)
 		}
 	}
+
 	for _, sv := range all {
+		serverPatterns := []string{sv.Name, "*"}
+		if sv.Cluster != "" {
+			serverPatterns = append(serverPatterns, "cluster:"+sv.Cluster)
+		}
 		for _, mv := range sv.Metrics {
+			metricPatterns := []string{mv.Name, "*"}
 			for _, m := range mv.Measurements {
-				pair := mv.Name + "." + m.Key
-				if serversFor[pair] == nil {
-					serversFor[pair] = make(map[string]bool)
+				// measurePatterns is the metric path's own remainder
+				// after the metric name: just the raw key for an
+				// ordinary measurement, or — when it decomposes into
+				// (instance, baseKey) — all three ways of naming that:
+				// the exact instance, any instance, or no instance
+				// segment at all.
+				measurePatterns := []string{m.Key}
+				if i := strings.LastIndexByte(m.Key, '.'); i > 0 && i < len(m.Key)-1 {
+					instance, baseKey := m.Key[:i], m.Key[i+1:]
+					measurePatterns = []string{instance + "." + baseKey, "*." + baseKey, baseKey}
 				}
-				serversFor[pair][sv.Name] = true
-				if sv.Cluster != "" {
-					if clustersFor[pair] == nil {
-						clustersFor[pair] = make(map[string]bool)
+				for _, sp := range serverPatterns {
+					for _, mp := range metricPatterns {
+						for _, ip := range measurePatterns {
+							add(sp + "/" + mp + "." + ip)
+						}
 					}
-					clustersFor[pair][sv.Cluster] = true
 				}
-				add(sv.Name + "/" + pair)
 			}
-		}
-	}
-	for pair, servers := range serversFor {
-		if len(servers) > 1 {
-			add("*/" + pair)
-		}
-	}
-	for pair, clusters := range clustersFor {
-		for cluster := range clusters {
-			add("cluster:" + cluster + "/" + pair)
 		}
 	}
 	sort.Strings(out)
@@ -1003,28 +1067,13 @@ func availableSeries(all []state.ServerView) []string {
 }
 
 // defaultSeriesPick is addWidgetModal's starting Autocomplete value: the
-// first option (in availableSeries' own sorted order) that actually
-// resolves to a percent-scaled measurement, for a widget type where
-// several matches get compared side by side in one tile (bars, several
-// gauges) — a raw byte count or a plain total doesn't compare across
-// differently-sized things the way a 0-100 percentage does, so a bars
-// widget built from whatever sorted first (often "total", alphabetically
-// ahead of "used_percent") would default to something that looks wrong
-// out of the gate. Everything else, and a widget type with no
-// percent-scaled option available at all, just gets the first option —
-// exactly the old, simpler default.
+// first option in availableSeries' own sorted order. There's no
+// per-measurement Unit any more (see internal/metric's package doc) to
+// prefer a percent-scaled option by, so every widget type just gets
+// whatever sorts first — an accepted loss of that simplification.
 func defaultSeriesPick(options []string, all []state.ServerView, widgetType dashboard.WidgetType) string {
 	if len(options) == 0 {
 		return ""
-	}
-	if widgetType == dashboard.WidgetBars || widgetType == dashboard.WidgetGauge {
-		for _, opt := range options {
-			for _, m := range (dashboard.SeriesRef{Selector: opt}).Resolve(all) {
-				if m.Measurement.Unit == "percent" {
-					return opt
-				}
-			}
-		}
 	}
 	return options[0]
 }
@@ -1034,7 +1083,7 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 	ui.Modal(c, &addWidgetOpen, func() {
 		options := availableSeries(all)
 
-		ui.Column(c).Width(360).Background(t.Surface).Radius(8).Padding(16).Gap(10).Children(func() {
+		ui.Column(c).Width(520).Background(t.Surface).Radius(8).Padding(16).Gap(10).Children(func() {
 			modalTitle := "Add widget — " + d.Name
 			if editWidgetIdx >= 0 {
 				modalTitle = "Edit widget — " + d.Name
@@ -1047,53 +1096,82 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 			ui.Select(c, &typeSel, typeOptions)
 			addWidgetType = dashboard.WidgetType(typeSel)
 
-			ui.Text(c, "Size").FontSize(11).TextColor(t.TextMuted)
-			sizeOptions := []string{"Auto", "1x1", "2x2", "3x3"}
-			sizeSel := sizeOptions[addWidgetSpan] // addWidgetSpan is 0-3, same index as sizeOptions
-			ui.Select(c, &sizeSel, sizeOptions)
-			for i, opt := range sizeOptions {
-				if opt == sizeSel {
-					addWidgetSpan = i
-				}
-			}
+			ui.Text(c, "Size (cells, 0 = auto)").FontSize(11).TextColor(t.TextMuted)
+			ui.Row(c).Gap(20).AlignItems(ui.Center).Children(func() {
+				spanControl(c, t, "Width", &addWidgetSpanX)
+				spanControl(c, t, "Height", &addWidgetSpanY)
+			})
 
 			ui.Text(c, "Title (optional)").FontSize(11).TextColor(t.TextMuted)
 			ui.TextInput(c, &addWidgetTitle)
 
-			single := addWidgetType == dashboard.WidgetGauge || addWidgetType == dashboard.WidgetNumber
 			ui.Text(c, "Series").FontSize(11).TextColor(t.TextMuted)
-			ui.Text(c, "type or pick a suggestion — * matches anything (*/cpu.usage, cluster:name/cpu.usage)").FontSize(9).TextColor(t.TextMuted)
+			ui.Text(c, "type or pick a suggestion — * matches anything (*/cpu.usage, cluster:name/cpu.usage, jumpbox/disk.*.used_percent)").FontSize(9).TextColor(t.TextMuted)
 			if len(options) == 0 {
 				ui.Text(c, "nothing is reporting yet to suggest from — you can still type a selector").FontSize(10).TextColor(t.TextMuted)
 			}
-			if single {
-				if addWidgetSinglePick == "" {
-					addWidgetSinglePick = defaultSeriesPick(options, all, addWidgetType)
-				}
-				ui.Autocomplete(c, &addWidgetSinglePick, options)
-
-				ui.Text(c, "Format (optional, e.g. %.0f, %5.2fGB, %6.2f%%)").FontSize(11).TextColor(t.TextMuted)
-				ui.TextInput(c, &addWidgetFormat)
-			} else {
-				if addWidgetNewPick == "" {
-					addWidgetNewPick = defaultSeriesPick(options, all, addWidgetType)
-				}
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Autocomplete(c, &addWidgetNewPick, options).Grow(1)
-					if ui.Button(c.Key("add-series-pick"), "Add").Clicked() && addWidgetNewPick != "" {
-						addWidgetSeriesPicks = append(addWidgetSeriesPicks, addWidgetNewPick)
-					}
+			// There's always exactly one blank row at the end, ready to
+			// type a new series into — no separate "+" button. The very
+			// first row of a brand new widget still gets the
+			// percent-preferring smart default (same as "+" used to
+			// seed it with); every row after that starts genuinely
+			// blank, since by the second series a guessed default is
+			// more often wrong than helpful.
+			if len(addWidgetSeriesPicks) == 0 {
+				addWidgetSeriesPicks = append(addWidgetSeriesPicks, dashboard.SeriesRef{
+					Selector: defaultSeriesPick(options, all, addWidgetType),
 				})
-				for i, p := range addWidgetSeriesPicks {
-					i := i
-					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, p).FontSize(11).Grow(1)
-						if ui.Button(c.Key(fmt.Sprintf("series-pick-remove-%d", i)), "×").Clicked() {
-							addWidgetSeriesPicks = append(addWidgetSeriesPicks[:i:i], addWidgetSeriesPicks[i+1:]...)
-						}
-					})
-				}
+			} else if strings.TrimSpace(addWidgetSeriesPicks[len(addWidgetSeriesPicks)-1].Selector) != "" {
+				addWidgetSeriesPicks = append(addWidgetSeriesPicks, dashboard.SeriesRef{})
 			}
+			// An editable ui.Table, one row per series — every field of
+			// every row is always live-editable in place (bound straight
+			// to &addWidgetSeriesPicks[row].X). flat strips each cell's
+			// own input-box chrome (padding/background/border/radius) —
+			// Table already pads its own cell wrapper
+			// (t.Space(1.5)/t.Space(2.5), not ours to change), so a
+			// plain TextInput/Autocomplete on top of that doubled the
+			// padding and boxed every cell in its own little pill,
+			// nothing like a spreadsheet. A blank Selector (the standing
+			// trailing row, or one left blank mid-list) is filtered out
+			// at Save, not here — this table shows the draft exactly as
+			// typed, including not-yet-finished rows.
+			flat := func(e ui.Element) ui.Element {
+				return e.Padding(0).Background(ui.Color{}).Border(0, ui.Color{}).Radius(0).FontSize(11)
+			}
+			seriesColumns := []ui.TableColumn{
+				{Title: "Selector"},
+				{Title: "Label", Width: 110},
+				{Title: "Format", Width: 70},
+				{Title: "", Width: 28, Fixed: true},
+			}
+			ui.Table(c, nil, seriesColumns, len(addWidgetSeriesPicks), func(row, col int) {
+				// A Remove click (col 3) earlier in this same pass may
+				// already have shortened addWidgetSeriesPicks — Table
+				// still calls cell() for every row up to the count it
+				// was given at the top of this render, same hazard
+				// dashboardGrid's own widget-removal crash came from
+				// (mutating the slice mid-render, after a later index
+				// was already committed to be built this frame).
+				if row >= len(addWidgetSeriesPicks) {
+					return
+				}
+				switch col {
+				case 0:
+					flat(ui.Autocomplete(c, &addWidgetSeriesPicks[row].Selector, options)).Grow(1).
+						Placeholder("server/metric.measurement")
+				case 1:
+					flat(ui.TextInput(c, &addWidgetSeriesPicks[row].Label)).Placeholder("Label").
+						Tooltip("Label (optional) — shown instead of the metric's own name")
+				case 2:
+					flat(ui.TextInput(c, &addWidgetSeriesPicks[row].Format)).Placeholder("Format").
+						Tooltip("Format (optional, e.g. %.0f, %5.2fGB, %6.2f%%)")
+				case 3:
+					if squareIconButton(c, fmt.Sprintf("series-remove-%d", row), removeIcon, "Remove").Clicked() {
+						addWidgetSeriesPicks = append(addWidgetSeriesPicks[:row:row], addWidgetSeriesPicks[row+1:]...)
+					}
+				}
+			}).Height(160)
 
 			if addWidgetErr != "" {
 				ui.Text(c, addWidgetErr).FontSize(11).TextColor(t.Danger)
@@ -1120,18 +1198,20 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 // empty picker, a rejected save) show inline in the modal instead of
 // silently closing it, so a failed add is visibly a failed add.
 func confirmAddWidget(d *dashboard.Dashboard, dashStore *dashboard.Store) {
+	// addWidgetSeriesPicks always carries at least one blank trailing
+	// row (the standing "type a new one here" row the table keeps
+	// appending) — never a real series, so it (and any other row left
+	// blank along the way) is dropped before Validate ever sees it: an
+	// empty Selector fails selector.Parse, and "the trailing placeholder
+	// row is an invalid series" isn't a real validation error to show
+	// anyone.
 	var series []dashboard.SeriesRef
-	single := addWidgetType == dashboard.WidgetGauge || addWidgetType == dashboard.WidgetNumber
-	if single {
-		if addWidgetSinglePick != "" {
-			series = append(series, dashboard.SeriesRef{Selector: addWidgetSinglePick, Format: addWidgetFormat})
-		}
-	} else {
-		for _, p := range addWidgetSeriesPicks {
-			series = append(series, dashboard.SeriesRef{Selector: p})
+	for _, p := range addWidgetSeriesPicks {
+		if strings.TrimSpace(p.Selector) != "" {
+			series = append(series, p)
 		}
 	}
-	w := dashboard.Widget{Type: addWidgetType, Title: addWidgetTitle, Series: series, Span: addWidgetSpan}
+	w := dashboard.Widget{Type: addWidgetType, Title: addWidgetTitle, Series: series, SpanX: int(addWidgetSpanX), SpanY: int(addWidgetSpanY)}
 	if err := w.Validate(); err != nil {
 		addWidgetErr = err.Error()
 		return

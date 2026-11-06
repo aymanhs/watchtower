@@ -5,12 +5,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"aymanhs/watchtower/internal/app"
 	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/event"
-	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
 	"aymanhs/watchtower/internal/storage"
 )
@@ -23,13 +23,13 @@ import (
 // dashboard existed, rather than keeping two different "look at this
 // server" views where only one of them could show a dashboard at all —
 // resizing the window narrower no longer drops back to the old pane.
-func render(c *ui.Context, store *state.Store, events *event.Engine, shells app.Shells, history *storage.Store, dashStore *dashboard.Store) {
+func render(c *ui.Context, win *mygo.Window, store *state.Store, events *event.Engine, shells app.Shells, history *storage.Store, dashStore *dashboard.Store) {
 	t := c.Theme()
 	width, _ := c.Size()
 	ungrouped, clusters := groupByCluster(store.Snapshot())
 
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
-		toolbar(c, shells)
+		toolbar(c, win, shells)
 
 		if len(ungrouped) == 0 && len(clusters) == 0 {
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -132,29 +132,13 @@ func statusDot(c *ui.Context, status state.Status, size float32, tooltip string)
 	}
 }
 
-// formatValue prints one value the way its measurement declared it should
-// look: bytes always get GiB-scaled (that's the unit itself saying so, not
-// a guess), then format picks the rest — FormatHuman's K/M/B scaling,
-// FormatInt's no-decimals, or FormatDefault's plain two decimals. The GUI
-// never infers this from a value's magnitude; a metric that wants "always
-// humanized" or "always a whole number" says so in its own display.format,
-// same principle as Widget.
-func formatValue(unit string, format metric.Format, v float64) string {
-	if unit == "bytes" && v >= 1<<20 {
-		return fmt.Sprintf("%.1fGiB", v/(1<<30))
-	}
-	switch format {
-	case metric.FormatInt:
-		return fmt.Sprintf("%.0f", v)
-	case metric.FormatHuman:
-		switch {
-		case v >= 1e9:
-			return fmt.Sprintf("%.2fB", v/1e9)
-		case v >= 1e6:
-			return fmt.Sprintf("%.2fM", v/1e6)
-		case v >= 1e3:
-			return fmt.Sprintf("%.2fK", v/1e3)
-		}
-	}
+// formatValue is the plain default a series' own number gets absent an
+// explicit per-series Format (dashboard.SeriesRef.Format, applied via
+// seriesValue/applyFormat in dashboard.go) — two decimal places, no
+// unit-driven auto-scaling. internal/metric declares no per-measurement
+// Unit/Format any more (see its package doc), so there's nothing left to
+// infer a smarter default from; a series wanting bytes shown as GiB, or
+// a count with no decimals, sets its own Format now.
+func formatValue(v float64) string {
 	return fmt.Sprintf("%.2f", v)
 }

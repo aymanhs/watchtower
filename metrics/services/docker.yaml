@@ -26,34 +26,3 @@ collector:
       /^  Stopped:/ { print "containers_stopped=" $2 }
       /^ Images:/ { print "images=" $2 }
     '
-metrics:
-  containers_total:
-    unit: count
-    type: gauge
-    display:
-      label: Total
-      format: int
-  containers_running:
-    unit: count
-    type: gauge
-    display:
-      label: Running
-      format: int
-  containers_paused:
-    unit: count
-    type: gauge
-    display:
-      label: Paused
-      format: int
-  containers_stopped:
-    unit: count
-    type: gauge
-    display:
-      label: Stopped
-      format: int
-  images:
-    unit: count
-    type: gauge
-    display:
-      label: Images
-      format: int

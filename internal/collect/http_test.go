@@ -35,11 +35,6 @@ func httpDef(url string) *metric.Definition {
 			Type: metric.CollectorHTTP,
 			URL:  url,
 		},
-		Metrics: map[string]metric.Measurement{
-			"connections": {Unit: "count", Type: metric.TypeGauge},
-			"cpu":         {Unit: "percent", Type: metric.TypeGauge},
-			"missing":     {Unit: "count", Type: metric.TypeGauge}, // deliberately absent from every test server's JSON
-		},
 	}
 }
 
@@ -68,6 +63,11 @@ func TestExecuteHTTP_ParsesJSONFields(t *testing.T) {
 	}
 }
 
+// TestExecuteHTTP_FieldOverride: "conn_count" is both auto-discovered
+// under its own raw JSON key and, via Fields, additionally exposed under
+// the friendlier "connections" — both point at the same value. Fields
+// adds a rename/alias on top of auto-discovery, it doesn't replace what
+// auto-discovery already found.
 func TestExecuteHTTP_FieldOverride(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"conn_count": 7}`))
@@ -81,8 +81,15 @@ func TestExecuteHTTP_FieldOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(obs) != 1 || obs[0].Value != 7 {
-		t.Fatalf("got %+v, want one observation with value 7 (via fields override)", obs)
+	byName := map[string]float64{}
+	for _, o := range obs {
+		byName[o.FullName()] = o.Value
+	}
+	if byName["nats1/nats.conn_count"] != 7 {
+		t.Errorf("conn_count = %v, want 7 (auto-discovered under its own raw name)", byName["nats1/nats.conn_count"])
+	}
+	if byName["nats1/nats.connections"] != 7 {
+		t.Errorf("connections = %v, want 7 (aliased via fields override)", byName["nats1/nats.connections"])
 	}
 }
 
@@ -96,7 +103,6 @@ func TestExecuteHTTP_NestedFieldPath(t *testing.T) {
 		Name: "nats", Groups: []string{"messaging"},
 		Interval: metric.Duration{Duration: 15 * time.Second}, Timeout: metric.Duration{Duration: 5 * time.Second},
 		Collector: metric.Collector{Type: metric.CollectorHTTP, URL: srv.URL, Fields: map[string]string{"pool_size": "cluster.pool_size"}},
-		Metrics:   map[string]metric.Measurement{"pool_size": {Unit: "count", Type: metric.TypeGauge}},
 	}
 
 	obs, err := Execute(context.Background(), directDialer{}, "nats1", def, 2*time.Second, nil)

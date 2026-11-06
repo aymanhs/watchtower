@@ -1,6 +1,25 @@
 package metric
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// baseDef returns a minimal, otherwise-valid Definition for tests that
+// only care about one specific Validate() rule (a malformed command
+// template, here) and want everything else to already pass.
+func baseDef() *Definition {
+	return &Definition{
+		Name:     "test",
+		Groups:   []string{"basic"},
+		Interval: Duration{10 * time.Second},
+		Timeout:  Duration{5 * time.Second},
+		Collector: Collector{
+			Type:    CollectorShell,
+			Command: "echo x=1",
+		},
+	}
+}
 
 func TestCollector_Render_NoTemplateIsNoOp(t *testing.T) {
 	c := Collector{Command: "free -b | awk '{print $1}'"}
@@ -33,7 +52,7 @@ func TestCollector_Render_MissingConfigKeyErrors(t *testing.T) {
 }
 
 func TestDefinition_Validate_RejectsMalformedTemplate(t *testing.T) {
-	d := baseDefForDisplay()
+	d := baseDef()
 	d.Collector.Command = "curl {{ .endpoint " // unclosed action
 	if err := d.Validate(); err == nil {
 		t.Fatal("expected error for malformed command template, got nil")
@@ -44,7 +63,7 @@ func TestDefinition_Validate_AcceptsTemplateWithNoConfigYet(t *testing.T) {
 	// A template referencing {{.endpoint}} is syntactically valid even
 	// though no config is supplied until a server resolves one — that's
 	// a runtime concern (Render), not a load-time one.
-	d := baseDefForDisplay()
+	d := baseDef()
 	d.Collector.Command = "curl -s http://{{.endpoint}}/varz"
 	if err := d.Validate(); err != nil {
 		t.Fatalf("Validate should accept a template with unresolved config refs: %v", err)

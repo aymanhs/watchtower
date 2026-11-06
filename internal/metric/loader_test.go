@@ -32,13 +32,6 @@ func TestLoadDefinitions_Valid(t *testing.T) {
 	if mem.Collector.Type != CollectorShell {
 		t.Errorf("memory collector type = %v, want shell", mem.Collector.Type)
 	}
-	free, ok := mem.Metrics["free"]
-	if !ok {
-		t.Fatal("memory.free measurement missing")
-	}
-	if free.Unit != "bytes" || free.Type != TypeGauge {
-		t.Errorf("memory.free = %+v, want unit=bytes type=gauge", free)
-	}
 	if len(mem.Events) != 4 { // available + used_percent, each warning/critical
 		t.Errorf("memory events = %d, want 4", len(mem.Events))
 	}
@@ -81,7 +74,6 @@ func TestDefinitionValidate_RejectsTimeoutGEInterval(t *testing.T) {
 			Type:    CollectorShell,
 			Command: "echo x=1",
 		},
-		Metrics: map[string]Measurement{"x": {Unit: "count", Type: TypeGauge}},
 	}
 	if err := d.Validate(); err == nil {
 		t.Fatal("expected error when timeout >= interval, got nil")

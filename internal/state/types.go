@@ -8,8 +8,6 @@ package state
 
 import (
 	"time"
-
-	"aymanhs/watchtower/internal/metric"
 )
 
 // Status is the four-color state the brief calls for: green, amber, red,
@@ -53,9 +51,13 @@ func worst(a, b Status) Status {
 // metrics, without duplicating the rank table.
 func Worst(a, b Status) Status { return worst(a, b) }
 
-// Scale is a resolved 0%-100% reference for a Bar or Gauge widget — by the
-// time it reaches a MeasurementView, metric.Scale's Min/Max/MaxRef has
-// already been resolved to concrete numbers (see ResolveScale).
+// Scale is a gauge or bars dashboard widget's own 0%-100% reference — set
+// by whoever builds that widget (dashboard.Widget.Min/Max), not anything
+// the collection engine resolves any more: there's no per-measurement
+// Display/Scale left to derive it from (see internal/metric's own
+// package doc). A widget with no Scale configured just doesn't draw a
+// gauge dial at all (bars falls back to scaling relative to its own
+// peer values instead — see cmd/watchtower-gui's barsTile).
 type Scale struct {
 	Min, Max float64
 }
@@ -77,47 +79,22 @@ func (s Scale) Fraction(value float64) float32 {
 	}
 }
 
-// Zone is one colored band on a Gauge's dial, in the measurement's own
-// value units (not a 0-1 fraction — the GUI maps it through Scale when
-// drawing). Severity "" means the normal/success band.
-type Zone struct {
-	From, To float64
-	Severity metric.Severity
-}
-
-// MeasurementView is one named value within a metric, as last observed,
-// plus its GUI presentation — resolved once per collection cycle from the
-// metric definition's Display block (see internal/app), not decided by
-// the GUI from the measurement's name or unit.
+// MeasurementView is one named value within a metric, as last observed —
+// just a key and a number. There's no declared Unit/Type/Label/Format/
+// Scale travelling with it any more (internal/metric no longer declares
+// any of that); a dashboard widget's own SeriesRef.Label/Format, and its
+// Widget.Min/Max for a gauge/bars, are the only presentation this value
+// ever gets, decided at the point someone builds that widget, not here.
 type MeasurementView struct {
-	Key   string // e.g. "available", "used"
+	Key   string // e.g. "available", "used" — the raw collector output key
 	Value float64
-	Unit  string
-	// Type is the measurement's own metric.Type (gauge/counter/rate),
-	// independent of Display — always set, whether or not there's a
-	// display block at all. A presentation charting history needs this:
-	// a cumulative counter has to be shown as a rate, not plotted raw.
-	Type metric.Type
-
-	Widget  metric.Widget
-	Primary bool
-	Scale   *Scale // nil unless Widget needs one and it resolved successfully
-	Zones   []Zone // only ever set for a Gauge; nil if the measurement has no event rules to derive bands from
-	Label   string // human-friendly name to show instead of Key; "" means show Key
-	// Format is the measurement's own metric.Format (its Display's, if it
-	// has one) — how a presentation should print its number. Always set
-	// from Display when there is one, "" (FormatDefault) otherwise.
-	Format metric.Format
 }
 
-// DisplayLabel is what a GUI should show for this measurement's name —
-// Label if the metric definition set one, Key otherwise. Centralized here
-// so every presentation applies the same rule, rather than each one
-// re-checking "is Label empty" itself.
+// DisplayLabel is what a GUI shows for this measurement's name absent a
+// dashboard series' own Label override — always Key; kept as a method,
+// not inlined at every call site, so a presentation reads "the display
+// name" once, in one place, regardless of what that resolves to.
 func (m MeasurementView) DisplayLabel() string {
-	if m.Label != "" {
-		return m.Label
-	}
 	return m.Key
 }
 
