@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/state"
 	"aymanhs/watchtower/internal/storage"
@@ -116,6 +117,29 @@ func metricRowsSince(servers []state.ServerView, text string, statusFilter int, 
 }
 
 func (r metricRow) key() string { return r.Server + "|" + r.Metric + "|" + r.Measurement }
+
+// selector is the exact dashboard series selector for this row.
+func (r metricRow) selector() string { return r.Server + "/" + r.Metric + "." + r.Measurement }
+
+// seriesForRows is the chosen rows as widget series, in table order.
+func seriesForRows(rows []metricRow, chosen *ui.Selection[string]) []dashboard.SeriesRef {
+	var out []dashboard.SeriesRef
+	for _, r := range rows {
+		if chosen.Has(r.key()) {
+			out = append(out, dashboard.SeriesRef{Selector: r.selector()})
+		}
+	}
+	return out
+}
+
+// addRowsToDashboard opens the regular add-widget modal on the Dashboard
+// tab, pre-filled with the selected rows as series.
+func addRowsToDashboard(series []dashboard.SeriesRef) {
+	resetWidgetDraft()
+	addWidgetSeriesPicks = series
+	addWidgetOpen = true
+	rightTab = tabDashboard
+}
 
 // sortMetricRows orders rows by a table column title; an empty or unknown
 // column keeps the given order. Sorting is stable so ties keep server order.
@@ -370,6 +394,16 @@ func metricDetailsPane(c *ui.Context, all []state.ServerView, history *storage.S
 				out := copyRows(rows, &metricChosen)
 				mygo.Clipboard.WriteText(rowsTSV(out))
 				metricNotice = fmt.Sprintf("copied %d rows", len(out))
+			}
+			if squareIconButton(c, "metrics-add-widget", addToDashboardIcon, "Add the selected rows to a dashboard widget").Clicked() {
+				switch series := seriesForRows(rows, &metricChosen); {
+				case len(series) == 0:
+					metricNotice = "select rows first"
+				case selectedDashboard == "":
+					metricNotice = "create a dashboard first"
+				default:
+					addRowsToDashboard(series)
+				}
 			}
 			if squareIconButton(c, "metrics-export", exportIcon, "Export shown rows as CSV").Clicked() {
 				data, err := rowsCSV(rows)

@@ -172,3 +172,23 @@ func TestWithLastSuccess(t *testing.T) {
 		t.Error("never-succeeded metric should have zero last success")
 	}
 }
+
+func TestSeriesForRows(t *testing.T) {
+	rows := []metricRow{
+		{Server: "a", Metric: "disk", Measurement: "root.used_percent"},
+		{Server: "b", Metric: "cpu", Measurement: "usage"},
+		{Server: "c", Metric: "cpu", Measurement: "usage"},
+	}
+	var chosen ui.Selection[string]
+	chosen.Add(rows[2].key())
+	chosen.Add(rows[0].key())
+	got := seriesForRows(rows, &chosen)
+	if len(got) != 2 || got[0].Selector != "a/disk.root.used_percent" || got[1].Selector != "c/cpu.usage" {
+		t.Fatalf("got %+v", got)
+	}
+	for _, s := range got {
+		if _, err := s.Parsed(); err != nil {
+			t.Errorf("selector %q does not parse: %v", s.Selector, err)
+		}
+	}
+}
