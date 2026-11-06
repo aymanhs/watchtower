@@ -11,18 +11,26 @@ clusters. Historical observations power chart widgets.
 
 ## Next in line
 
-- Investigation views, remaining phases: raw collector output per metric,
-  table-shaped results (services/processes/logs), "add to dashboard" from a measurement.
-  Phase 1 (global Metrics tab with text/glob, status, and selected-server
-  filters, sortable columns, row selection, last hour/day/all time range, copy as
-  TSV, CSV export; Events tab has the same range, copy, and export) is done.
-- Metrics tab: chart of selected rows (needs design so the table stays
-  uncluttered); min/avg/max window columns arrive with aggregates.
 - History aggregates (downsampled rollups) together with a selectable chart
-  range; chart history is currently fixed to one hour.
+  range; chart history is currently fixed to one hour. Design first: compute
+  at query time vs stored rollup files, bucket sizes, retention, and keeping
+  the store simple. Unlocks min/avg/max window columns in the Metrics tab.
+- Metrics tab: chart of selected rows (needs design so the table stays
+  uncluttered; follows aggregates so it can respect the range).
+- Cleanup: investigation view phase 1 is complete. Raw collector output is
+  deliberately not kept: collector failures are events whose message quotes
+  a bounded excerpt of the offending output or stderr.
 
 ## Ideas
 
+- Table-shaped metrics: collectors whose result is a list of rows, not one
+  number per dotted name (services and their state, top processes with
+  CPU/memory/PID, containers, mounts, recent failed logins or log lines).
+  key=value output cannot carry these without losing information. It needs
+  its own collector output contract (header line plus rows), a table widget
+  instead of a chart/gauge, rule kinds such as "any row where state is not
+  running" or "row count", and a decision on what history keeps (probably only
+  derived counts, not whole tables).
 - Additional credential providers; authentication currently supports SSH keys
   and the SSH agent only.
 - Warn at startup when several server entries share the same host/port/user.

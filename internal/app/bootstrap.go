@@ -46,11 +46,11 @@ type Shells map[string]*sshmgr.Client
 // server up front, and returns one scheduler.Task per (server, metric)
 // pair the servers' groups resolve to, plus Shells for opening an
 // interactive session separately from metric collection. events and
-// store are wired into every task; store may be nil (no GUI state kept),
-// print controls whether tasks also write to stdout. history, if non-nil,
+// store are wired into every task; store may be nil (no GUI state kept).
+// history, if non-nil,
 // persists every successful observation for later range queries (charts)
 // — independent of store, which only ever holds the latest value.
-func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *state.Store, history *storage.Store, print bool) ([]scheduler.Task, Shells, error) {
+func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *state.Store, history *storage.Store) ([]scheduler.Task, Shells, error) {
 	defs, err := metric.LoadDefinitions(paths.Metrics)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load metric definitions: %w", err)
@@ -114,7 +114,6 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 				Events:          events,
 				Store:           store,
 				History:         history,
-				Print:           print,
 			})
 		}
 	}

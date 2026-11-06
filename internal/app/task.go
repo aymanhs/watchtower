@@ -1,12 +1,11 @@
 // Package app wires the independent engine components (metric/group/server
 // config, SSH, scheduler, event engine, state store) into the set of
-// scheduler.Tasks a presentation layer runs. cmd/watchtower-gui (MyGo GUI) calls Bootstrap and gets back the
-// engine; keeping it free of toolkit imports keeps it presentation-neutral.
+// scheduler.Tasks a presentation layer runs. cmd/watchtower-gui (MyGo GUI) calls Bootstrap and gets back
+// the engine; keeping it free of toolkit imports keeps it presentation-neutral.
 package app
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -20,8 +19,8 @@ import (
 
 // MetricTask adapts one (server, metric definition) pair to scheduler.Task.
 // It is the single place that bridges SSH/collect to the event engine and,
-// optionally, to a state.Store and/or console output — a presentation
-// layer needs nothing more than a *state.Store to render from.
+// optionally, to a state.Store and history — a presentation layer needs
+// nothing more than a *state.Store to render from.
 type MetricTask struct {
 	ServerName                string
 	Def                       *metric.Definition
@@ -48,9 +47,6 @@ type MetricTask struct {
 	// how demo fixtures feed synthetic observations through the same
 	// event/state/history pipeline as live collection.
 	Collect func(ctx context.Context) ([]collect.Observation, error)
-	// Print, if true, writes observations and event transitions to stdout
-	// — the console presentation's entire rendering.
-	Print bool
 }
 
 func (t *MetricTask) Name() string            { return t.ServerName + "/" + t.Def.Name }
@@ -69,9 +65,7 @@ func (t *MetricTask) Run(ctx context.Context) error {
 	}
 	now := time.Now()
 
-	if opEv := t.Events.EvaluateCollectorResult(t.ServerName, t.Def.Name, err, now); opEv != nil && t.Print {
-		printEvent(*opEv)
-	}
+	t.Events.EvaluateCollectorResult(t.ServerName, t.Def.Name, err, now)
 
 	if err != nil {
 		if t.Store != nil {
@@ -83,9 +77,6 @@ func (t *MetricTask) Run(ctx context.Context) error {
 	measurementSeverity := make(map[string]metric.Severity, len(obs))
 	measurements := make([]state.MeasurementView, 0, len(obs))
 	for _, o := range obs {
-		if t.Print {
-			fmt.Printf("%-32s = %-16v %s\n", o.FullName(), o.Value, o.Timestamp.Format(time.RFC3339))
-		}
 		measurement := strings.TrimPrefix(o.Metric, t.Def.Name+".")
 		// ruleKey is what event rules are actually declared against —
 		// baseKey for a per-instance measurement (disk's
@@ -96,9 +87,7 @@ func (t *MetricTask) Run(ctx context.Context) error {
 		// "disk.root" and "disk.data" alarm independently instead of
 		// sharing one ambiguous state.
 		ruleKey, _ := metric.SplitInstance(measurement)
-		if ev := t.Events.EvaluateThreshold(t.ServerName, t.Def, measurement, ruleKey, o.Value, o.Timestamp); ev != nil && t.Print {
-			printEvent(*ev)
-		}
+		t.Events.EvaluateThreshold(t.ServerName, t.Def, measurement, ruleKey, o.Value, o.Timestamp)
 		if t.History != nil {
 			if err := t.History.Append(o.FullName(), o.Timestamp, o.Value); err != nil {
 				log.Printf("[%s] history: %v", t.Name(), err)
@@ -112,19 +101,4 @@ func (t *MetricTask) Run(ctx context.Context) error {
 		t.Store.UpdateSuccess(t.ServerName, t.Def.Name, measurements, measurementSeverity, now)
 	}
 	return nil
-}
-
-func printEvent(ev event.Event) {
-	switch ev.Kind {
-	case event.KindRaised:
-		fmt.Printf("!!! EVENT  %-8s %-10s %s/%-24s value=%v threshold=%v %q\n",
-			ev.Severity, ev.Kind, ev.Server, ev.Metric, ev.Value, ev.Threshold, ev.Message)
-	case event.KindRecovered:
-		sev := ev.Severity
-		if sev == "" {
-			sev = "normal"
-		}
-		fmt.Printf("!!! EVENT  %-8s %-10s %s/%-24s value=%v %q\n",
-			sev, ev.Kind, ev.Server, ev.Metric, ev.Value, ev.Message)
-	}
 }

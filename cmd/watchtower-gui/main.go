@@ -126,6 +126,7 @@ func run() error {
 		events.Seed(past)
 	}
 	events.OnEvent(func(ev event.Event) {
+		log.Printf("event %s %s %s/%s sev=%q value=%v: %s", ev.Category, ev.Kind, ev.Server, ev.Metric, ev.Severity, ev.Value, ev.Message)
 		if err := evlog.Append(ev); err != nil {
 			log.Printf("event log: %v", err)
 		}
@@ -145,7 +146,7 @@ func run() error {
 		}
 		tasks = demo.Tasks(defs, events, store, history)
 	} else {
-		tasks, shells, err = app.Bootstrap(ctx, app.DefaultPaths, events, store, history, false /* no console printing */)
+		tasks, shells, err = app.Bootstrap(ctx, app.DefaultPaths, events, store, history)
 		if err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
