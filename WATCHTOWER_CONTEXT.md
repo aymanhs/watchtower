@@ -120,6 +120,12 @@ exists). The single-instance lock still applies, so quit a real instance first.
   Interactive shells reuse the persistent SSH client rather than authenticating
   again. The GUI's shutdown should cancel and join the scheduler before closing
   history storage.
+- SSH reconnects use a per-server backoff gate (`internal/sshmgr`): the delay
+  ceiling doubles from 2s to a 5min cap with half jitter, resets on success,
+  and is shared by every metric on that server, so a down host gets one dial
+  per window and other callers fail fast ("backing off, next attempt in ...").
+  Auth and host-key failures go straight to the cap. Opening the interactive
+  terminal bypasses the gate once.
 - SSH warmup is concurrent and bounded; failed initial connections are logged
   and left to the client's reconnect behavior instead of blocking other
   servers.
@@ -134,8 +140,7 @@ See `TODO.md` for the maintained short list. In particular:
 - Chart history range is not user-selectable.
 - Collection concurrency is a hardcoded limit of 16 in each command entry
   point.
-- SSH reconnects have no backoff, and multiple server entries for one physical
-  host use separate SSH connections.
+- Multiple server entries for one physical host use separate SSH connections.
 - Authentication is based on SSH key files/agent; no other credential
   providers are integrated.
 

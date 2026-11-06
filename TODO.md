@@ -18,8 +18,7 @@ clusters. Historical observations power chart widgets.
 - Chart history is fixed to a one-hour window.
 - Collection concurrency is capped at 16 in the command entry points and is
   not configurable.
-- SSH reconnects have no backoff, and multiple server entries for the same
-  host use separate SSH connections.
+- Multiple server entries for the same host use separate SSH connections.
 - Authentication supports SSH keys and the SSH agent; no other credential
   providers are integrated.
 
