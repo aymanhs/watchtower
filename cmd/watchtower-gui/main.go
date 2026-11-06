@@ -107,13 +107,6 @@ func run(dataDir string, demoMode bool) error {
 	store := state.NewStore()
 
 	storageDir, dashDir := filepath.Join(dataDir, "storage"), filepath.Join(dataDir, "dashboards")
-	if demoMode {
-		// Demo history is regenerated every launch so it always ends "now".
-		if err := os.RemoveAll(storageDir); err != nil {
-			return fmt.Errorf("reset demo history: %w", err)
-		}
-	}
-
 	history, err := storage.Open(storageDir, historyRetention)
 	if err != nil {
 		return fmt.Errorf("open history: %w", err)
@@ -162,13 +155,18 @@ func run(dataDir string, demoMode bool) error {
 		if err != nil {
 			return fmt.Errorf("load metric definitions: %w", err)
 		}
-		now := time.Now()
-		recentFrom := now.Add(-demoBackfillRecentSpan)
-		if err := demo.Backfill(history, defs, recentFrom, demoBackfillSpan-demoBackfillRecentSpan, demoBackfillStep); err != nil {
-			return fmt.Errorf("demo backfill: %w", err)
-		}
-		if err := demo.Backfill(history, defs, now, demoBackfillRecentSpan, demoBackfillRecentStep); err != nil {
-			return fmt.Errorf("demo backfill: %w", err)
+		// Backfill only a fresh data dir: demo history is kept between
+		// launches (delete <data>/storage to regenerate), and the time
+		// between launches then shows as a gap, like a real outage.
+		if existing, _ := filepath.Glob(filepath.Join(storageDir, "data-*.dat")); len(existing) == 0 {
+			now := time.Now()
+			recentFrom := now.Add(-demoBackfillRecentSpan)
+			if err := demo.Backfill(history, defs, recentFrom, demoBackfillSpan-demoBackfillRecentSpan, demoBackfillStep); err != nil {
+				return fmt.Errorf("demo backfill: %w", err)
+			}
+			if err := demo.Backfill(history, defs, now, demoBackfillRecentSpan, demoBackfillRecentStep); err != nil {
+				return fmt.Errorf("demo backfill: %w", err)
+			}
 		}
 		tasks = demo.Tasks(defs, events, store, history)
 	} else {
@@ -215,6 +213,12 @@ func run(dataDir string, demoMode bool) error {
 		// so the closure (which only actually runs later, once the
 		// window exists) needs it declared first instead.
 		var win *mygo.Window
+		repaint := func() {
+			if win != nil {
+				win.Update(func() {})
+			}
+		}
+		chartCache = newAggCache(history.QueryAgg, repaint)
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title: "Watchtower",
 			// Large enough on first launch to actually see a dashboard

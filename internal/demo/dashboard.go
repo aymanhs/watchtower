@@ -19,7 +19,7 @@ func SeedDashboard(store *dashboard.Store) error {
 		{Type: dashboard.WidgetGauge, Title: "web CPU", Min: ptr(0), Max: ptr(100), Series: []dashboard.SeriesRef{
 			{Selector: "web-*/cpu.usage", Format: "%.0f%%"},
 		}},
-		{Type: dashboard.WidgetChart, Title: "Memory used %", SpanX: 3, Series: []dashboard.SeriesRef{
+		{Type: dashboard.WidgetChart, Title: "Memory used % (7d)", Range: "7d", SpanX: 3, Series: []dashboard.SeriesRef{
 			{Selector: "*/memory.used_percent", Format: "%.0f%%"},
 		}},
 		{Type: dashboard.WidgetBars, Title: "Disk used %", Min: ptr(0), Max: ptr(100), Series: []dashboard.SeriesRef{
@@ -27,6 +27,9 @@ func SeedDashboard(store *dashboard.Store) error {
 		}},
 		{Type: dashboard.WidgetNumber, Title: "NATS connections", Series: []dashboard.SeriesRef{
 			{Selector: "cluster:nats/nats.connections", Format: "%.0f"},
+		}},
+		{Type: dashboard.WidgetChart, Title: "Load (30d)", Range: "30d", SpanX: 3, Series: []dashboard.SeriesRef{
+			{Selector: "*/cpu.load1"},
 		}},
 		{Type: dashboard.WidgetPie, Title: "web-1 containers", Series: []dashboard.SeriesRef{
 			{Selector: "web-1/docker.containers_running"},

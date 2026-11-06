@@ -118,6 +118,19 @@ the `-data` directory (storage is wiped each run; a sample dashboard is seeded i
 exists). `make run-wsl` runs the same demo natively under WSLg for a faster
 dev loop (no tray there: the app logs that and runs without it). The single-instance lock still applies, so quit a real instance first.
 
+## Chart history
+
+Chart widgets read aggregated history, not raw points: `storage.QueryAgg`
+buckets each series by a window picked from the widget's `range` (1h to 30d,
+default 1h). `cmd/watchtower-gui/aggcache.go` caches results per (series,
+range), fetches in a background goroutine and keeps the old data on screen
+while refreshing, so the 1s repaint never queries storage. Each point is one
+window's average, drawn over a translucent min/max band, and the line breaks
+where data is missing. Each chart tile has a per-session range selector; the
+saved range is set in the widget editor. The refresh icon on the dashboard
+toolbar invalidates every entry. The Metrics tab deliberately shows raw
+values only, never aggregates.
+
 ## Notable design decisions
 
 - A metric definition owns collection and alert rules, not visual presentation.

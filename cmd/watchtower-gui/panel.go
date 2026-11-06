@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -44,9 +45,9 @@ var (
 	termServer  = ""
 )
 
-// chartWindow is how far back a chart looks. Fixed for this first pass —
-// a picker (1h/24h/7d/...) is a natural follow-up, not built yet.
-const chartWindow = time.Hour
+// chartCache serves every chart's aggregated history; set once in main
+// (it needs the history store and the window's repaint hook).
+var chartCache *aggCache
 
 // chartItem is one series a chart can plot: its label plus the exact
 // history key to query it under (internal/storage's "server/metric.key").
@@ -318,72 +319,106 @@ func terminalPanel(c *ui.Context) {
 	terminal.View(c, termSession).Fill().AutoFocus()
 }
 
+// chartSegment is one unbroken run of a series, as [0,1]-normalized
+// coordinates against the chart's shared scales.
+type chartSegment struct{ xs, ys, lo, hi []float32 }
+
 // chartSeries is one item's resolved, ready-to-draw data within a chart
-// tile: its history scaled into [0,1]-normalized x/y coordinates against
-// the chart's shared x and y scales, plus the color and label to
-// draw/legend it with.
+// tile: the average per window split into segments wherever data is
+// missing, plus the color and label to draw/legend it with.
 type chartSeries struct {
 	label string
 	color ui.Color
-	xs    []float32
-	ys    []float32
+	segs  []chartSegment
 }
 
-// renderSeriesChart draws a multi-series line chart over items' history,
-// all sharing one y-axis — the shared rendering a dashboard chart widget
-// (internal/dashboard-configured, arbitrary series) builds on. There's no
-// per-measurement Unit any more (see internal/metric's package doc), so
-// there's nothing left to group series by for a second axis; every
-// series just shares the one scale, whatever its own magnitude.
-func renderSeriesChart(c *ui.Context, history *storage.Store, title string, items []chartItem) ui.Element {
-	t := c.Theme()
+// splitAtGaps breaks buckets into runs, starting a new run wherever the
+// space between one bucket and the next exceeds two windows — an outage
+// then shows as a gap instead of a line drawn across it.
+func splitAtGaps(buckets []storage.Bucket, window time.Duration) [][]storage.Bucket {
+	var runs [][]storage.Bucket
+	for i, b := range buckets {
+		if i == 0 || b.Start.Sub(buckets[i-1].End) > 2*window {
+			runs = append(runs, nil)
+		}
+		runs[len(runs)-1] = append(runs[len(runs)-1], b)
+	}
+	return runs
+}
 
-	to := time.Now()
-	from := to.Add(-chartWindow)
-	xScale := chart.NewTime(from, to)
+// windowLabel renders a window compactly: 15s, 5m, 6h, 1d.
+func windowLabel(d time.Duration) string {
+	switch {
+	case d%(24*time.Hour) == 0:
+		return strconv.Itoa(int(d/(24*time.Hour))) + "d"
+	case d%time.Hour == 0:
+		return strconv.Itoa(int(d/time.Hour)) + "h"
+	case d%time.Minute == 0:
+		return strconv.Itoa(int(d/time.Minute)) + "m"
+	}
+	return strconv.Itoa(int(d/time.Second)) + "s"
+}
+
+// rangeLabel is windowLabel for a chart's whole range.
+func rangeLabel(d time.Duration) string { return windowLabel(d) }
+
+// bucketMid is where a bucket's average is plotted on the time axis.
+func bucketMid(b storage.Bucket) time.Time {
+	return b.Start.Add(b.End.Sub(b.Start) / 2)
+}
+
+// renderSeriesChart draws a multi-series line chart over items' aggregated
+// history for the last rng, all sharing one y-axis — the shared rendering
+// a dashboard chart widget builds on. Data comes from chartCache, never a
+// direct query: the window repaints every second. There's no
+// per-measurement Unit any more (see internal/metric's package doc), so
+// every series just shares the one scale, whatever its own magnitude.
+func renderSeriesChart(c *ui.Context, title string, items []chartItem, rng time.Duration) ui.Element {
+	t := c.Theme()
 	colors := seriesColors(t)
 
-	var allValues []float64
-	type rawSeries struct {
-		label  string
-		points []storage.Point
+	names := make([]string, len(items))
+	for i, it := range items {
+		names[i] = it.historyKey
 	}
-	var raws []rawSeries
-	var queryErr error
+	view := chartCache.Get(names, rng)
+	xScale := chart.NewTime(view.From, view.To)
+
+	var allValues []float64
 	for _, it := range items {
-		points, err := history.Query(it.historyKey, from, to)
-		if err != nil {
-			queryErr = err
-			continue
+		for _, b := range view.Data[it.historyKey] {
+			allValues = append(allValues, b.Min, b.Max)
 		}
-		if len(points) == 0 {
-			continue
-		}
-		for _, p := range points {
-			allValues = append(allValues, p.Value)
-		}
-		raws = append(raws, rawSeries{label: it.label, points: points})
 	}
 
 	var series []chartSeries
 	var yScale chart.Linear
-	if len(raws) > 0 {
+	if len(allValues) > 0 {
 		lo, hi := chart.Extent(allValues...)
 		yScale = chart.NewLinear(lo, hi).Nice(4)
-		for i, r := range raws {
-			xs := make([]float32, len(r.points))
-			ys := make([]float32, len(r.points))
-			for j, p := range r.points {
-				xs[j] = xScale.At(p.Timestamp)
-				ys[j] = yScale.At(p.Value)
+		for i, it := range items {
+			buckets := view.Data[it.historyKey]
+			if len(buckets) == 0 {
+				continue
 			}
-			series = append(series, chartSeries{
-				label: r.label,
-				color: colors[i%len(colors)],
-				xs:    xs,
-				ys:    ys,
-			})
+			s := chartSeries{label: it.label, color: colors[i%len(colors)]}
+			for _, run := range splitAtGaps(buckets, view.Window) {
+				n := len(run)
+				seg := chartSegment{xs: make([]float32, n), ys: make([]float32, n), lo: make([]float32, n), hi: make([]float32, n)}
+				for j, b := range run {
+					seg.xs[j] = xScale.At(bucketMid(b))
+					seg.ys[j] = yScale.At(b.Avg())
+					seg.lo[j] = yScale.At(b.Min)
+					seg.hi[j] = yScale.At(b.Max)
+				}
+				s.segs = append(s.segs, seg)
+			}
+			series = append(series, s)
 		}
+	}
+	queryErr := view.Err
+	if len(series) > 0 {
+		queryErr = nil // a failed refresh keeps showing the last good data
 	}
 
 	return ui.Column(c).Background(t.Surface).Children(func() {
@@ -400,8 +435,12 @@ func renderSeriesChart(c *ui.Context, history *storage.Store, title string, item
 			return
 		}
 		if len(series) == 0 {
+			msg := "no data yet for this window"
+			if !view.Loaded {
+				msg = "loading…"
+			}
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-				ui.Text(c, "no data yet for this window").FontSize(11).TextColor(t.TextMuted)
+				ui.Text(c, msg).FontSize(11).TextColor(t.TextMuted)
 			})
 			return
 		}
@@ -413,6 +452,8 @@ func renderSeriesChart(c *ui.Context, history *storage.Store, title string, item
 					ui.Text(c, s.label).FontSize(9).TextColor(t.TextMuted).NoWrap()
 				})
 			}
+			// Says what each plotted point is, since it is no longer a raw sample.
+			ui.Text(c, "avg + min/max per "+windowLabel(view.Window)+" · last "+rangeLabel(rng)).FontSize(9).TextColor(t.TextMuted).NoWrap()
 		})
 
 		axes := chart.Axes{
@@ -436,8 +477,16 @@ func renderSeriesChart(c *ui.Context, history *storage.Store, title string, item
 					p.Line(x, r.Y, x, r.Y+r.H, 1, grid)
 				}
 				for _, s := range series {
-					path := chart.Line(r, s.xs, s.ys, chart.CurveMonotone)
-					p.StrokePath(path, 2, s.color)
+					for _, seg := range s.segs {
+						if len(seg.xs) == 1 { // a lone point has no line to draw
+							p.Fill(ui.Rect{X: chart.X(r, seg.xs[0]) - 2, Y: chart.Y(r, seg.ys[0]) - 2, W: 4, H: 4}, s.color, 2)
+							continue
+						}
+						// Each point summarizes many samples, so the min–max
+						// envelope is drawn behind the average line.
+						p.FillPath(chart.Area(r, seg.xs, seg.lo, seg.hi, chart.CurveMonotone), s.color.Alpha(0.18))
+						p.StrokePath(chart.Line(r, seg.xs, seg.ys, chart.CurveMonotone), 2, s.color)
+					}
 				}
 			})
 		}).Fill().Gap(3).Padding(0, 8, 6, 4)

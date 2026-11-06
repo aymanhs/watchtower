@@ -1,6 +1,9 @@
 package dashboard
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func ptr[T any](v T) *T { return &v }
 
@@ -163,5 +166,23 @@ func TestDashboard_Validate(t *testing.T) {
 				t.Fatalf("want no error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestWidgetRange(t *testing.T) {
+	w := Widget{Type: WidgetChart, Series: []SeriesRef{{Selector: "a/b.c"}}}
+	if w.EffectiveRange() != DefaultRange {
+		t.Fatalf("unset range must default, got %q", w.EffectiveRange())
+	}
+	w.Range = "7d"
+	if err := w.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := RangeDuration("7d"); !ok || d != 7*24*time.Hour {
+		t.Fatalf("7d = %v %v", d, ok)
+	}
+	w.Range = "2w"
+	if err := w.Validate(); err == nil {
+		t.Fatal("unknown range must be rejected")
 	}
 }

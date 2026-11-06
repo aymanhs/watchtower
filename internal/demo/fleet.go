@@ -77,6 +77,11 @@ var errUnreachable = errors.New("demo: simulated collection failure")
 // Sample returns the measurements metricName reports for s at t, keyed as
 // a collector would emit them (instance-qualified where applicable).
 func (s Server) Sample(metricName string, t time.Time) (map[string]float64, error) {
+	// The flaky server also drops off entirely now and then, long enough
+	// to leave a visible gap in 1d and 7d charts.
+	if s.flaky && burst(s.Name+"down", t, 29*time.Hour, 4*time.Hour) > 0 {
+		return nil, errUnreachable
+	}
 	switch metricName {
 	case "cpu":
 		return s.cpu(t), nil

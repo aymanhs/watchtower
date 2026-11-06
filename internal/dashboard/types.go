@@ -27,6 +27,7 @@ package dashboard
 
 import (
 	"fmt"
+	"time"
 
 	"aymanhs/watchtower/internal/selector"
 )
@@ -151,6 +152,38 @@ type Widget struct {
 	// reads these at all.
 	Min *float64 `yaml:"min,omitempty"`
 	Max *float64 `yaml:"max,omitempty"`
+
+	// Range is how far back a chart looks: one of Ranges ("1h", "6h",
+	// "1d", "7d", "30d"). Empty means DefaultRange, so dashboards saved
+	// before this field existed keep their one-hour charts. Only chart
+	// widgets read it.
+	Range string `yaml:"range,omitempty"`
+}
+
+// Ranges are the chart ranges a widget may choose, shortest first.
+var Ranges = []string{"1h", "6h", "1d", "7d", "30d"}
+
+// DefaultRange is a chart's range when Widget.Range is unset.
+const DefaultRange = "1h"
+
+var rangeDurations = map[string]time.Duration{
+	"1h": time.Hour, "6h": 6 * time.Hour, "1d": 24 * time.Hour,
+	"7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour,
+}
+
+// RangeDuration resolves a Range name to its duration; ok is false for a
+// name that isn't in Ranges.
+func RangeDuration(name string) (time.Duration, bool) {
+	d, ok := rangeDurations[name]
+	return d, ok
+}
+
+// EffectiveRange is w's chart range with the default applied.
+func (w Widget) EffectiveRange() string {
+	if w.Range == "" {
+		return DefaultRange
+	}
+	return w.Range
 }
 
 // Scale reports w's own Min/Max as a plain (min, max, ok) triple — ok is
@@ -237,6 +270,11 @@ func (w Widget) Validate() error {
 	}
 	if w.SpanY < 0 || w.SpanY > MaxSpan {
 		return fmt.Errorf("dashboard widget %q (%s): span_y %d out of range (1-%d, or 0 for the type's default)", w.Title, w.Type, w.SpanY, MaxSpan)
+	}
+	if w.Range != "" {
+		if _, ok := RangeDuration(w.Range); !ok {
+			return fmt.Errorf("dashboard widget %q (%s): range %q must be one of %v", w.Title, w.Type, w.Range, Ranges)
+		}
 	}
 	if (w.Min == nil) != (w.Max == nil) {
 		return fmt.Errorf("dashboard widget %q (%s): min and max must both be set, or neither", w.Title, w.Type)

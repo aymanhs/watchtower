@@ -161,8 +161,9 @@ var (
 	addWidgetSpanY = float64(0)
 	// addWidgetMin/addWidgetMax are a gauge/bars widget's scale as typed;
 	// both blank means no scale (Widget.Min/Max nil).
-	addWidgetMin = ""
-	addWidgetMax = ""
+	addWidgetMin   = ""
+	addWidgetMax   = ""
+	addWidgetRange = dashboard.DefaultRange
 	// editWidgetIdx is -1 while the modal is adding a brand new widget,
 	// or the index (into the selected server's own Dashboard slice)
 	// being edited in place — confirmAddWidget checks this to decide
@@ -259,6 +260,9 @@ func dashboardPicker(c *ui.Context, names []string, dashStore *dashboard.Store) 
 		if squareIconButton(c, "add-widget", addWidgetIcon, "Add widget to this dashboard").Clicked() && selectedDashboard != "" {
 			resetWidgetDraft()
 			addWidgetOpen = true
+		}
+		if squareIconButton(c, "refresh-charts", refreshIcon, "Refresh charts now (they refresh on their own as data ages)").Clicked() {
+			chartCache.Invalidate()
 		}
 	})
 	newDashboardModal(c, dashStore)
@@ -959,6 +963,9 @@ func buildPieSlice(cx, cy, r float32, startDeg, sweepDeg float64) *ui.Path {
 	return path
 }
 
+// chartRangeSel holds each chart tile's selected range index.
+var chartRangeSel = map[string]*int{}
+
 func chartTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, history *storage.Store, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
 	t := c.Theme()
 	key := fmt.Sprintf("chart-%d", idx)
@@ -985,7 +992,25 @@ func chartTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, histor
 			})
 			return
 		}
-		renderSeriesChart(c, history, "", items).Fill()
+		// The segmented control is a per-session override of the saved
+		// range; the saved one is changed in the widget editor.
+		k := selectedDashboard + "/" + fmt.Sprint(idx)
+		sel, ok := chartRangeSel[k]
+		if !ok {
+			sel = new(int)
+			for i, r := range dashboard.Ranges {
+				if r == w.EffectiveRange() {
+					*sel = i
+				}
+			}
+			chartRangeSel[k] = sel
+		}
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "aggregated over").FontSize(10).TextColor(t.TextMuted)
+			ui.Segmented(c, sel, dashboard.Ranges...)
+		})
+		rng, _ := dashboard.RangeDuration(dashboard.Ranges[*sel])
+		renderSeriesChart(c, "", items, rng).Fill()
 	})
 }
 
@@ -1001,6 +1026,7 @@ func resetWidgetDraft() {
 	addWidgetSpanY = 0
 	addWidgetMin = ""
 	addWidgetMax = ""
+	addWidgetRange = dashboard.DefaultRange
 	editWidgetIdx = -1
 }
 
@@ -1016,6 +1042,7 @@ func openWidgetEditor(idx int, w dashboard.Widget) {
 	editWidgetIdx = idx
 	addWidgetType = w.Type
 	addWidgetTitle = w.Title
+	addWidgetRange = w.EffectiveRange()
 	addWidgetSpanX = float64(w.RawSpanX())
 	addWidgetSpanY = float64(w.RawSpanY())
 	addWidgetSeriesPicks = append([]dashboard.SeriesRef(nil), w.Series...)
@@ -1134,6 +1161,11 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 
 			ui.Text(c, "Title (optional)").FontSize(11).TextColor(t.TextMuted)
 			ui.TextInput(c, &addWidgetTitle)
+
+			if addWidgetType == dashboard.WidgetChart {
+				ui.Text(c, "Range (how far back the chart looks)").FontSize(11).TextColor(t.TextMuted)
+				ui.Select(c, &addWidgetRange, dashboard.Ranges)
+			}
 
 			if addWidgetType == dashboard.WidgetGauge || addWidgetType == dashboard.WidgetBars {
 				ui.Text(c, "Scale (0% to 100% of the dial/bar — e.g. 0 and 100 for percentages)").FontSize(11).TextColor(t.TextMuted)
@@ -1277,6 +1309,9 @@ func confirmAddWidget(d *dashboard.Dashboard, dashStore *dashboard.Store) {
 		}
 	}
 	w := dashboard.Widget{Type: addWidgetType, Title: addWidgetTitle, Series: series, SpanX: int(addWidgetSpanX), SpanY: int(addWidgetSpanY)}
+	if addWidgetType == dashboard.WidgetChart && addWidgetRange != dashboard.DefaultRange {
+		w.Range = addWidgetRange
+	}
 	if addWidgetType == dashboard.WidgetGauge || addWidgetType == dashboard.WidgetBars {
 		min, max, err := parseScale(addWidgetMin, addWidgetMax)
 		if err != nil {
