@@ -3,7 +3,7 @@
 # library the app is built against never drift apart.
 MYGO_VERSION := v0.7.4
 
-.PHONY: build run-wsl run-wsl-real test clean
+.PHONY: build run-wsl run-wsl-real run-win test clean
 
 # Windows GUI build, cross-compiled from Linux via mygo's own build tool:
 # proper GUI-subsystem exe (no console flash), app name/version from
@@ -20,6 +20,13 @@ run-wsl:
 # Same, against real servers in ./data (the server manager works here).
 run-wsl-real:
 	LIBGL_ALWAYS_SOFTWARE=1 go run ./cmd/watchtower-gui
+
+
+# Builds and runs the actual cross-compiled Windows exe under Wine, against
+# real servers in ./data — unlike run-wsl(-real), this exercises the shipped
+# binary itself, not a native Linux build.
+run-win: build
+	dist/windows-amd64/Watchtower.exe
 
 test:
 	go test ./... -race
