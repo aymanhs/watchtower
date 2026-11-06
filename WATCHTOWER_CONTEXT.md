@@ -119,6 +119,21 @@ the `-data` directory (storage is wiped each run; a sample dashboard is seeded i
 exists). `make run-wsl` runs the same demo natively under WSLg for a faster
 dev loop (no tray there: the app logs that and runs without it). The single-instance lock still applies, so quit a real instance first.
 
+## Objects
+
+An object is a named JSON value (a process list, failed units) for data that
+is not one number. A definition with `kind: object` has a shell collector that
+prints JSON; it is a separate, usually slower job than metrics
+(`metrics/linux/processes.yaml`). The compact JSON is capped at 4096 bytes
+(`max_bytes` overrides); invalid or oversized output is a collector failure
+event. `app.ObjectTask` stores results in `internal/objstore` under
+`<server>/<definition>`: the latest in memory, and each *changed* value as one
+JSON line in `storage/objects-YYYY-MM-DD.jsonl` (same retention sweep as
+metrics; the latest is restored from those files at startup). Object
+definitions cannot have event rules. The GUI's Objects tab shows the selected
+server's latest value (table for a list of records, key/value for one record)
+and lets you view any stored change.
+
 ## Chart history
 
 Chart widgets read aggregated history, not raw points: `storage.QueryAgg`

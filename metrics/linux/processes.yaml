@@ -1,0 +1,13 @@
+name: processes
+kind: object
+groups:
+  - linux
+interval: 60s
+timeout: 10s
+collector:
+  type: shell
+  command: |
+    ps -eo pid=,user=,pcpu=,pmem=,comm= --sort=-pcpu | head -n 8 | awk '
+      BEGIN { printf "[" }
+      { printf "%s{\"pid\":%d,\"user\":\"%s\",\"cpu\":%s,\"mem\":%s,\"cmd\":\"%s\"}", (NR>1 ? "," : ""), $1, $2, $3, $4, $5 }
+      END { print "]" }'

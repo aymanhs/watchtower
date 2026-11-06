@@ -15,14 +15,10 @@ Nothing queued. Pick from Ideas.
 
 ## Ideas
 
-- Table-shaped metrics: collectors whose result is a list of rows, not one
-  number per dotted name (services and their state, top processes with
-  CPU/memory/PID, containers, mounts, recent failed logins or log lines).
-  key=value output cannot carry these without losing information. It needs
-  its own collector output contract (header line plus rows), a table widget
-  instead of a chart/gauge, rule kinds such as "any row where state is not
-  running" or "row count", and a decision on what history keeps (probably only
-  derived counts, not whole tables).
+- Objects follow-ups: dashboard widgets bound to an object (table and
+  key/value), rules over objects (e.g. count of rows where state is not
+  running), `emit:` to derive metrics from an object, and docker/other object
+  definitions beyond `processes` and `failed_units`.
 - Server management follow-ups: a "test connection" button, and per-server
   reload instead of swapping the whole collection (active alarms of a removed
   server stay raised in the event engine until restart).

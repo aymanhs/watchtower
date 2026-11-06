@@ -5,7 +5,9 @@
 package collect
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"time"
@@ -120,4 +122,26 @@ func observationsFrom(serverName string, def *metric.Definition, values map[stri
 		})
 	}
 	return observations
+}
+
+// ExecuteObject runs an object definition's shell command once and returns
+// its output as compact JSON. Output that isn't valid JSON, or whose
+// compact form exceeds the definition's size limit, is an error.
+func ExecuteObject(ctx context.Context, runner Runner, def *metric.Definition, timeout time.Duration, config map[string]any) (json.RawMessage, error) {
+	command, err := def.Collector.Render(config)
+	if err != nil {
+		return nil, fmt.Errorf("object %q: %w", def.Name, err)
+	}
+	out, err := runner.Run(ctx, command, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("object %q: %w", def.Name, err)
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(out)); err != nil {
+		return nil, fmt.Errorf("object %q: output is not JSON: %w", def.Name, err)
+	}
+	if limit := def.ObjectLimit(); buf.Len() > limit {
+		return nil, fmt.Errorf("object %q: too large (%d bytes > %d)", def.Name, buf.Len(), limit)
+	}
+	return buf.Bytes(), nil
 }

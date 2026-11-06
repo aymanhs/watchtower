@@ -1,0 +1,13 @@
+name: failed_units
+kind: object
+groups:
+  - linux
+interval: 2m
+timeout: 10s
+collector:
+  type: shell
+  command: |
+    systemctl --failed --no-legend --plain 2>/dev/null | awk '
+      BEGIN { printf "[" }
+      { printf "%s{\"unit\":\"%s\",\"active\":\"%s\",\"sub\":\"%s\"}", (NR>1 ? "," : ""), $1, $3, $4 }
+      END { print "]" }'

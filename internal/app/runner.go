@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"aymanhs/watchtower/internal/event"
+	"aymanhs/watchtower/internal/objstore"
 	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/server"
 	"aymanhs/watchtower/internal/state"
@@ -21,6 +22,7 @@ type Runner struct {
 	Events        *event.Engine
 	Store         *state.Store
 	History       *storage.Store
+	Objects       *objstore.Store
 	MaxConcurrent int
 	OnError       scheduler.ErrorHandler
 
@@ -53,7 +55,7 @@ func (r *Runner) Reload() error {
 
 func (r *Runner) swapLocked() error {
 	ctx, cancel := context.WithCancel(r.parent)
-	tasks, shells, err := Bootstrap(ctx, r.Paths, r.Events, r.Store, r.History)
+	tasks, shells, err := Bootstrap(ctx, r.Paths, r.Events, r.Store, r.History, r.Objects)
 	if err != nil {
 		cancel()
 		return err

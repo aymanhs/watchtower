@@ -24,6 +24,7 @@ import (
 	"aymanhs/watchtower/internal/event"
 	"aymanhs/watchtower/internal/eventlog"
 	"aymanhs/watchtower/internal/metric"
+	"aymanhs/watchtower/internal/objstore"
 	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/state"
 	"aymanhs/watchtower/internal/storage"
@@ -124,6 +125,16 @@ func run(dataDir string, demoMode bool) error {
 		log.Printf("history: initial retention sweep: %v", err)
 	}
 
+	objects, err := objstore.Open(storageDir, historyRetention)
+	if err != nil {
+		return fmt.Errorf("open objects: %w", err)
+	}
+	if err := objects.ApplyRetention(); err != nil {
+		log.Printf("objects: initial retention sweep: %v", err)
+	}
+
+	objectStore = objects
+
 	// Events persist beside metric history (same directory, same retention)
 	// so outages survive restarts; seeded before any task can evaluate.
 	evlog, err := eventlog.Open(storageDir, historyRetention)
@@ -169,7 +180,7 @@ func run(dataDir string, demoMode bool) error {
 				return fmt.Errorf("demo backfill: %w", err)
 			}
 		}
-		tasks = demo.Tasks(defs, events, store, history)
+		tasks = append(demo.Tasks(defs, events, store, history), demo.ObjectTasks(events, objects)...)
 	} else {
 		defs, err := metric.LoadDefinitions(paths.Metrics)
 		if err != nil {
@@ -178,7 +189,7 @@ func run(dataDir string, demoMode bool) error {
 		knownGroups = groupNames(defs)
 		serverDir = paths.Servers
 		runner = &app.Runner{
-			Paths: paths, Events: events, Store: store, History: history,
+			Paths: paths, Events: events, Store: store, History: history, Objects: objects,
 			MaxConcurrent: maxConcurrentCollections,
 			OnError:       func(taskName string, err error) { log.Printf("[%s] ERROR: %v", taskName, err) },
 		}

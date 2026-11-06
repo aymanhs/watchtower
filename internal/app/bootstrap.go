@@ -14,6 +14,7 @@ import (
 	"aymanhs/watchtower/internal/group"
 	"aymanhs/watchtower/internal/localrun"
 	"aymanhs/watchtower/internal/metric"
+	"aymanhs/watchtower/internal/objstore"
 	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/server"
 	"aymanhs/watchtower/internal/sshmgr"
@@ -57,7 +58,7 @@ func (s Shells) Close() {
 // history, if non-nil,
 // persists every successful observation for later range queries (charts)
 // — independent of store, which only ever holds the latest value.
-func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *state.Store, history *storage.Store) ([]scheduler.Task, Shells, error) {
+func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *state.Store, history *storage.Store, objects *objstore.Store) ([]scheduler.Task, Shells, error) {
 	defs, err := metric.LoadDefinitions(paths.Metrics)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load metric definitions: %w", err)
@@ -111,6 +112,16 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 		for _, def := range resolved {
 			interval, timeout, config := effective(groupReg, cfg, def)
 			log.Printf("server %s: scheduling %s every %s (timeout %s)", cfg.Name, def.Name, interval, timeout)
+			if def.IsObject() {
+				if objects != nil {
+					tasks = append(tasks, &ObjectTask{
+						ServerName: cfg.Name, Def: def, Client: runner,
+						CollectInterval: interval, Deadline: timeout,
+						Config: config, Events: events, Objects: objects,
+					})
+				}
+				continue
+			}
 			tasks = append(tasks, &MetricTask{
 				ServerName:      cfg.Name,
 				Def:             def,

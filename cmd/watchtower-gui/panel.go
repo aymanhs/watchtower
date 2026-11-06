@@ -280,6 +280,7 @@ func selectableRow(c *ui.Context, sv state.ServerView) {
 const (
 	tabDashboard = iota
 	tabMetrics
+	tabObjects
 	tabEvents
 )
 
@@ -290,10 +291,12 @@ const (
 func detailPane(c *ui.Context, events *event.Engine, history *storage.Store, dashStore *dashboard.Store, all []state.ServerView, paneWidth float32) {
 	top := func() {
 		ui.Column(c).Fill().Children(func() {
-			ui.Tabs(c, &rightTab, "Dashboard", "Metrics", "Events")
+			ui.Tabs(c, &rightTab, "Dashboard", "Metrics", "Objects", "Events")
 			switch rightTab {
 			case tabMetrics:
 				metricDetailsPane(c, all, history)
+			case tabObjects:
+				objectsPane(c, all)
 			case tabEvents:
 				eventsPanel(c, events)
 			default:

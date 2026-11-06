@@ -33,6 +33,20 @@ const (
 	CollectorHTTP CollectorType = "http"
 )
 
+// Kind says what a definition collects.
+type Kind string
+
+const (
+	// KindMetric (the default) collects numbers.
+	KindMetric Kind = "metric"
+	// KindObject collects one JSON value, stored whole (see internal/objstore).
+	KindObject Kind = "object"
+)
+
+// DefaultMaxObjectBytes caps an object's compact JSON size unless a
+// definition's max_bytes says otherwise.
+const DefaultMaxObjectBytes = 4096
+
 // Collector describes how to produce raw measurement output.
 type Collector struct {
 	Type CollectorType `yaml:"type"`
@@ -143,6 +157,12 @@ type Definition struct {
 	Name   string   `yaml:"name"`
 	Groups []string `yaml:"groups,omitempty"`
 
+	// Kind is "metric" (default) or "object". An object definition's shell
+	// command prints one JSON value instead of key=value numbers.
+	Kind Kind `yaml:"kind,omitempty"`
+	// MaxBytes caps an object's size; 0 means DefaultMaxObjectBytes.
+	MaxBytes int `yaml:"max_bytes,omitempty"`
+
 	Interval Duration `yaml:"interval"`
 	Timeout  Duration `yaml:"timeout"`
 
@@ -151,6 +171,17 @@ type Definition struct {
 
 	// SourceFile is set by the loader, not read from YAML, for diagnostics.
 	SourceFile string `yaml:"-"`
+}
+
+// IsObject reports whether d collects an object rather than metrics.
+func (d *Definition) IsObject() bool { return d.Kind == KindObject }
+
+// ObjectLimit is the size cap in bytes for an object definition.
+func (d *Definition) ObjectLimit() int {
+	if d.MaxBytes > 0 {
+		return d.MaxBytes
+	}
+	return DefaultMaxObjectBytes
 }
 
 // SplitInstance decomposes a raw collector output key into its base key
@@ -180,6 +211,18 @@ func SplitInstance(name string) (baseKey, instance string) {
 func (d *Definition) Validate() error {
 	if d.Name == "" {
 		return fmt.Errorf("metric definition missing name")
+	}
+	switch d.Kind {
+	case "", KindMetric:
+	case KindObject:
+		if d.Collector.Type != CollectorShell {
+			return fmt.Errorf("metric %q: object definitions need a shell collector", d.Name)
+		}
+		if len(d.Events) > 0 {
+			return fmt.Errorf("metric %q: object definitions can't have event rules", d.Name)
+		}
+	default:
+		return fmt.Errorf("metric %q: unknown kind %q", d.Name, d.Kind)
 	}
 	if len(d.Groups) == 0 {
 		return fmt.Errorf("metric %q: must belong to at least one group", d.Name)
