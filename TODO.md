@@ -11,20 +11,7 @@ clusters. Historical observations power chart widgets.
 
 ## Next in line
 
-- History aggregates are in: `storage.QueryAgg` (streaming min/max/sum/count
-  per window, one buffered pass per day file, 30d x 400 series at 15s takes
-  ~5s, one series ~1.4s, so no stored rollups yet) feeds chart widgets through
-  `aggCache` (background fetch, stale-while-revalidate, refreshed only while
-  rendered). Charts have a per-widget `range` (1h/6h/1d/7d/30d) with an
-  in-tile selector, draw the avg line over a min/max band per window, and
-  break the line at gaps. Aggregates stay in charts; the Metrics tab shows
-  raw values only. Stored rollups only if 30d queries get too slow.
-- Metrics tab: selecting rows shows a chart of them under the table with its
-  own range selector (aggregates live only in that chart, never in the
-  table). Nothing else is queued; pick from Ideas.
-- Cleanup: investigation view phase 1 is complete. Raw collector output is
-  deliberately not kept: collector failures are events whose message quotes
-  a bounded excerpt of the offending output or stderr.
+Nothing queued. Pick from Ideas.
 
 ## Ideas
 
@@ -50,6 +37,10 @@ clusters. Historical observations power chart widgets.
 
 ## Decided against
 
+- Keeping raw collector output: collector failures are events whose message
+  quotes a bounded excerpt of the offending output or stderr instead.
+- Aggregates in the Metrics table: it shows raw values at exact instants;
+  aggregation lives in charts only.
 - Shared SSH connections per host: entries for the same host intentionally get
   separate connections and backoff state; one entry can carry any number of
   metrics.

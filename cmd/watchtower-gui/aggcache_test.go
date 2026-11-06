@@ -98,3 +98,18 @@ func TestWindowLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestPageBounds(t *testing.T) {
+	for _, tc := range []struct{ n, page, size, lo, hi, pages, clamped int }{
+		{0, 0, 100, 0, 0, 1, 0},
+		{250, 0, 100, 0, 100, 3, 0},
+		{250, 2, 100, 200, 250, 3, 2},
+		{250, 9, 100, 200, 250, 3, 2},
+		{250, -1, 100, 0, 100, 3, 0},
+	} {
+		lo, hi, pages, clamped := pageBounds(tc.n, tc.page, tc.size)
+		if lo != tc.lo || hi != tc.hi || pages != tc.pages || clamped != tc.clamped {
+			t.Errorf("pageBounds(%d,%d,%d) = %d,%d,%d,%d", tc.n, tc.page, tc.size, lo, hi, pages, clamped)
+		}
+	}
+}

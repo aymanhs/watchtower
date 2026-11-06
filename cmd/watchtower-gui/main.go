@@ -57,6 +57,10 @@ const (
 	demoDataDir    = "data/demo"
 )
 
+// eventHistoryCap bounds the in-memory events the Events tab pages through.
+// Events are rare and small, so this comfortably covers the 30-day retention.
+const eventHistoryCap = 20000
+
 func main() {
 	demoMode := flag.Bool("demo", false, "run against a synthetic fleet (no real servers)")
 	dataFlag := flag.String("data", "", "data directory (servers/, storage/, dashboards/, watchtower.log); default \"data\", or \"data/demo\" with -demo")
@@ -103,7 +107,7 @@ func run(dataDir string, demoMode bool) error {
 	paths := app.DefaultPaths
 	paths.Servers = filepath.Join(dataDir, "servers")
 
-	events := event.NewEngine(0)
+	events := event.NewEngine(eventHistoryCap)
 	store := state.NewStore()
 
 	storageDir, dashDir := filepath.Join(dataDir, "storage"), filepath.Join(dataDir, "dashboards")

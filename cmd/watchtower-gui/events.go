@@ -16,7 +16,25 @@ var (
 	eventRange      = rangeAll
 	eventKindFilter = 0 // index into eventKindLabels
 	eventNotice     = ""
+	eventPage       = 0 // 0 is the newest page
+	eventPageSig    string
 )
+
+// eventPageSize is how many events one page of the table shows.
+const eventPageSize = 100
+
+// pageBounds clamps page to [0, pages) for n rows and returns the slice
+// range of that page plus the page count.
+func pageBounds(n, page, size int) (lo, hi, pages, clamped int) {
+	pages = (n + size - 1) / size
+	if pages == 0 {
+		pages = 1
+	}
+	clamped = max(0, min(page, pages-1))
+	lo = clamped * size
+	hi = min(n, lo+size)
+	return lo, hi, pages, clamped
+}
 
 var eventKindLabels = []string{"All", "Thresholds", "Collector"}
 
@@ -132,10 +150,24 @@ func eventsPanel(c *ui.Context, events *event.Engine) {
 	shown := filterEventRows(buildEventRows(events.History(), now), rangeCutoff(eventRange, now), eventKindFilter)
 	n := len(shown)
 
+	// A different filter is a different list, so start again at the newest.
+	if sig := fmt.Sprint(eventKindFilter, eventRange); sig != eventPageSig {
+		eventPageSig, eventPage = sig, 0
+	}
+	lo, hi, pages, page := pageBounds(n, eventPage, eventPageSize)
+	eventPage = page
+
 	ui.Column(c).Fill().Background(t.Surface).Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(10, 10, 6, 10).Children(func() {
 			ui.Segmented(c, &eventKindFilter, eventKindLabels...)
 			ui.Segmented(c, &eventRange, timeRangeLabels...)
+			if squareIconButton(c, "events-newer", newerIcon, "Newer events").Clicked() && eventPage > 0 {
+				eventPage--
+			}
+			ui.Text(c, fmt.Sprintf("page %d of %d", page+1, pages)).FontSize(11).TextColor(t.TextMuted)
+			if squareIconButton(c, "events-older", olderIcon, "Older events").Clicked() && eventPage < pages-1 {
+				eventPage++
+			}
 			if squareIconButton(c, "events-copy", copyIcon, "Copy shown events (tab-separated)").Clicked() {
 				mygo.Clipboard.WriteText(eventsTSV(shown))
 				eventNotice = fmt.Sprintf("copied %d events", n)
@@ -162,8 +194,8 @@ func eventsPanel(c *ui.Context, events *event.Engine) {
 			{Title: "Duration", Width: 190},
 			{Title: "Event"},
 		}
-		ui.Table(c, nil, columns, n, func(row, col int) {
-			r := shown[row]
+		ui.Table(c, nil, columns, hi-lo, func(row, col int) {
+			r := shown[lo+row]
 			switch col {
 			case 0:
 				ui.Text(c, r.Ev.Server).FontSize(11)

@@ -61,7 +61,7 @@ Useful starting points:
 - GUI entry point/lifecycle: `cmd/watchtower-gui/main.go`
 - Dashboard rendering/editor: `cmd/watchtower-gui/dashboard.go`
 - Main layout, right-pane tabs, events table, terminal, and chart helpers: `cmd/watchtower-gui/panel.go`
-- Events tab (type/range filters, collector outage durations): `cmd/watchtower-gui/events.go`
+- Events tab (type/range filters, collector outage durations, 100-per-page pager over up to 20000 in-memory events): `cmd/watchtower-gui/events.go`
 - Metrics tab (global measurement table with server, text/glob, and status filters, sortable columns, time range, copy/CSV export): `cmd/watchtower-gui/details.go`
 
 ## Configuration and runtime data
