@@ -1,0 +1,16 @@
+name: listening_ports
+kind: object
+groups:
+  - linux
+interval: 5m
+timeout: 10s
+collector:
+  type: shell
+  command: |
+    ss -H -ltn 2>/dev/null | head -n 60 | awk '
+      BEGIN { printf "[" }
+      { n = split($4, a, ":"); port = a[n]; addr = substr($4, 1, length($4) - length(port) - 1)
+        printf "%s{\"addr\":\"%s\",\"port\":%d}", (NR>1 ? "," : ""), addr, port }
+      END { print "]" }'
+emit:
+  count: count

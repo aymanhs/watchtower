@@ -15,8 +15,9 @@ Nothing queued. Pick from Ideas.
 
 ## Ideas
 
-- Objects follow-ups: more object definitions (docker containers, listening
-  ports, pending updates), and a table view for objects shaped as flat lists.
+- Objects follow-ups: more object definitions (open connections, cron/backup
+  status), and a table option for the object dashboard widget (the Objects tab
+  has it).
 - Server management follow-ups: a "test connection" button, and per-server
   reload instead of swapping the whole collection (active alarms of a removed
   server stay raised in the event engine until restart).

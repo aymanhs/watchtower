@@ -1,0 +1,24 @@
+name: containers
+kind: object
+groups:
+  - docker
+interval: 60s
+timeout: 15s
+collector:
+  type: shell
+  command: |
+    command -v docker >/dev/null 2>&1 || { echo '[]'; exit 0; }
+    docker ps -a --format '{{"{{.Names}}"}}|{{"{{.Image}}"}}|{{"{{.State}}"}}|{{"{{.Status}}"}}' | head -n 40 | awk -F'|' '
+      BEGIN { printf "[" }
+      { printf "%s{\"name\":\"%s\",\"image\":\"%s\",\"state\":\"%s\",\"status\":\"%s\"}", (NR>1 ? "," : ""), $1, $2, $3, $4 }
+      END { print "]" }'
+emit:
+  total: count
+  not_running: count where state != running
+  restarting: count where state = restarting
+events:
+  - name: containers.restarting
+    measurement: restarting
+    condition: above
+    threshold: 0
+    severity: warning

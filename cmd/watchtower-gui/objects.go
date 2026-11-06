@@ -21,6 +21,7 @@ var (
 	objectStore *objstore.Store
 	objectSel   string // chosen object name within the selected server
 	objectAt    = latestLabel
+	objectMode  int // 0 table, 1 JSON, for list-of-objects values
 	objectHist  struct {
 		name   string
 		newest time.Time
@@ -73,9 +74,71 @@ func objectsPane(c *ui.Context, all []state.ServerView) {
 	if e, ok := hist.byText[objectAt]; ok {
 		shown = e
 	}
+	cols, rows, tabular := tableOf(shown.Value)
+	if tabular {
+		ui.Segmented(c, &objectMode, "Table", "JSON")
+	}
+	if tabular && objectMode == 0 {
+		tableCols := make([]ui.TableColumn, len(cols))
+		for i, name := range cols {
+			tableCols[i] = ui.TableColumn{Title: name, Width: 140}
+		}
+		ui.Table(c, nil, tableCols, len(rows), func(row, col int) {
+			ui.Text(c, rows[row][col]).FontSize(11)
+		})
+		return
+	}
 	ui.Scroll(c).Fill().Children(func() {
 		jsonView(c, shown.Value)
 	})
+}
+
+// tableOf reads raw as a table when it is a non-empty list of objects:
+// columns in first-seen key order, cells as text (nested values as JSON).
+func tableOf(raw json.RawMessage) (cols []string, rows [][]string, ok bool) {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil || len(items) == 0 {
+		return nil, nil, false
+	}
+	index := map[string]int{}
+	var cells []map[string]string
+	for _, it := range items {
+		dec := json.NewDecoder(bytes.NewReader(it))
+		if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+			return nil, nil, false
+		}
+		row := map[string]string{}
+		for dec.More() {
+			k, err := dec.Token()
+			if err != nil {
+				return nil, nil, false
+			}
+			var v json.RawMessage
+			if dec.Decode(&v) != nil {
+				return nil, nil, false
+			}
+			key := k.(string)
+			if _, seen := index[key]; !seen {
+				index[key] = len(cols)
+				cols = append(cols, key)
+			}
+			var str string
+			if json.Unmarshal(v, &str) == nil {
+				row[key] = str
+			} else {
+				row[key] = string(v)
+			}
+		}
+		cells = append(cells, row)
+	}
+	for _, row := range cells {
+		r := make([]string, len(cols))
+		for i, k := range cols {
+			r[i] = row[k]
+		}
+		rows = append(rows, r)
+	}
+	return cols, rows, len(cols) > 0
 }
 
 // objectHistory caches the stored changes of name, reloading only when a

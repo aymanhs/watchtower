@@ -137,7 +137,11 @@ expression, one of `count`, `count where FIELD OP VALUE`,
 `<definition>.<key>` (state, history, charts) and event rules on the
 definition apply to it, so alerting on objects is alerting on emitted metrics.
 
-The GUI shows objects pretty-printed with syntax colors (key order kept): the
+Shipped object definitions: `processes`, `failed_units`, `containers`
+(docker group), `listening_ports`, `pending_updates` (apt).
+
+The GUI shows objects pretty-printed with syntax colors (key order kept), and
+as a table when the value is a list of objects (Table/JSON toggle): the
 Objects tab for the selected server, with a picker over stored changes, and
 the `object` dashboard widget, whose series selector is
 `server/object.*` (clusters and globs work as for metrics).
