@@ -68,6 +68,9 @@ Useful starting points:
 
 - Metric definitions: `metrics/` (examples are grouped by domain).
 - Group overrides: `groups/` (optional; absence is allowed).
+- The data directory is `data/` by default; `-data <dir>` relocates it
+  (`servers/`, `storage/`, `dashboards/`, `watchtower.log` all live under it).
+  `-demo` defaults it to `data/demo/` so synthetic and real data never mix.
 - Per-server connection and override files: `data/servers/` (gitignored).
 - Global dashboard files: `data/dashboards/`.
 - Metric history: `data/storage/`.
@@ -109,9 +112,11 @@ from `internal/demo` instead of real servers. Fake servers emit realistic
 CPU/memory/disk/network/docker/NATS measurements as deterministic functions of
 time, through the normal `MetricTask` pipeline (`MetricTask.Collect` replaces
 only the collector), so events, live state, and history behave as in real use.
-Three hours of history are regenerated at each launch. Demo data lives under
-`data/demo/` (storage is wiped each run; a sample dashboard is seeded if none
-exists). The single-instance lock still applies, so quit a real instance first.
+Thirty days of history (5-minute steps, 30-second for the last six hours) are
+regenerated at each launch. Demo data lives under `data/demo/` by default, or
+the `-data` directory (storage is wiped each run; a sample dashboard is seeded if none
+exists). `make run-wsl` runs the same demo natively under WSLg for a faster
+dev loop (no tray there: the app logs that and runs without it). The single-instance lock still applies, so quit a real instance first.
 
 ## Notable design decisions
 

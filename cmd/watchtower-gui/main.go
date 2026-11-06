@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -34,36 +35,55 @@ const maxConcurrentCollections = 16
 // partition files get deleted.
 const historyRetention = 30 * 24 * time.Hour
 
-// initLogFile sends log output to data/watchtower.log: the Windows GUI
+// initLogFile sends log output to <dataDir>/watchtower.log: the Windows GUI
 // build has no console, so otherwise startup errors are invisible.
-func initLogFile() {
-	if err := os.MkdirAll("data", 0o755); err != nil {
+func initLogFile(dataDir string) {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join("data", "watchtower.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(filepath.Join(dataDir, "watchtower.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return
 	}
-	log.SetOutput(f)
+	// The file comes first: on the Windows GUI build stderr is unusable and
+	// its write error must not drop the file copy.
+	log.SetOutput(io.MultiWriter(f, os.Stderr))
 }
 
+// defaultDataDir and demoDataDir keep real and synthetic data apart: -demo
+// switches the default so it can never touch real history or dashboards.
+const (
+	defaultDataDir = "data"
+	demoDataDir    = "data/demo"
+)
+
 func main() {
-	initLogFile()
-	if err := run(); err != nil {
+	demoMode := flag.Bool("demo", false, "run against a synthetic fleet (no real servers)")
+	dataFlag := flag.String("data", "", "data directory (servers/, storage/, dashboards/, watchtower.log); default \"data\", or \"data/demo\" with -demo")
+	flag.Parse()
+	dataDir := *dataFlag
+	if dataDir == "" {
+		dataDir = defaultDataDir
+		if *demoMode {
+			dataDir = demoDataDir
+		}
+	}
+	initLogFile(dataDir)
+	if err := run(dataDir, *demoMode); err != nil {
 		log.Fatal(err)
 	}
 }
 
-// demoBackfill is how much synthetic history demo mode pre-populates.
+// Demo mode pre-populates 30 days of coarse history (so 7d/30d charts have
+// something to show) plus a recent stretch at a finer step.
 const (
-	demoBackfillSpan = 3 * time.Hour
-	demoBackfillStep = 30 * time.Second
+	demoBackfillSpan       = 30 * 24 * time.Hour
+	demoBackfillStep       = 5 * time.Minute
+	demoBackfillRecentSpan = 6 * time.Hour
+	demoBackfillRecentStep = 30 * time.Second
 )
 
-func run() error {
-	demoMode := flag.Bool("demo", false, "run against a synthetic fleet (no real servers); data goes under data/demo")
-	flag.Parse()
-
+func run(dataDir string, demoMode bool) error {
 	// SetName first — RequestSingleInstanceLock's lock is keyed by app
 	// name. Then the lock itself, before anything else starts (SSH
 	// connects, history opens, collection schedules): a second launch
@@ -80,14 +100,15 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	paths := app.DefaultPaths
+	paths.Servers = filepath.Join(dataDir, "servers")
+
 	events := event.NewEngine(0)
 	store := state.NewStore()
 
-	storageDir, dashDir := "data/storage", "data/dashboards"
-	if *demoMode {
-		// Demo history is regenerated every launch so it always ends "now"
-		// and never mixes with (or pollutes) real history.
-		storageDir, dashDir = filepath.Join("data", "demo", "storage"), filepath.Join("data", "demo", "dashboards")
+	storageDir, dashDir := filepath.Join(dataDir, "storage"), filepath.Join(dataDir, "dashboards")
+	if demoMode {
+		// Demo history is regenerated every launch so it always ends "now".
 		if err := os.RemoveAll(storageDir); err != nil {
 			return fmt.Errorf("reset demo history: %w", err)
 		}
@@ -136,17 +157,22 @@ func run() error {
 		tasks  []scheduler.Task
 		shells app.Shells
 	)
-	if *demoMode {
-		defs, err := metric.LoadDefinitions(app.DefaultPaths.Metrics)
+	if demoMode {
+		defs, err := metric.LoadDefinitions(paths.Metrics)
 		if err != nil {
 			return fmt.Errorf("load metric definitions: %w", err)
 		}
-		if err := demo.Backfill(history, defs, time.Now(), demoBackfillSpan, demoBackfillStep); err != nil {
+		now := time.Now()
+		recentFrom := now.Add(-demoBackfillRecentSpan)
+		if err := demo.Backfill(history, defs, recentFrom, demoBackfillSpan-demoBackfillRecentSpan, demoBackfillStep); err != nil {
+			return fmt.Errorf("demo backfill: %w", err)
+		}
+		if err := demo.Backfill(history, defs, now, demoBackfillRecentSpan, demoBackfillRecentStep); err != nil {
 			return fmt.Errorf("demo backfill: %w", err)
 		}
 		tasks = demo.Tasks(defs, events, store, history)
 	} else {
-		tasks, shells, err = app.Bootstrap(ctx, app.DefaultPaths, events, store, history)
+		tasks, shells, err = app.Bootstrap(ctx, paths, events, store, history)
 		if err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
@@ -159,7 +185,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load dashboards: %w", err)
 	}
-	if *demoMode {
+	if demoMode {
 		if err := demo.SeedDashboard(dashStore); err != nil {
 			return fmt.Errorf("seed demo dashboard: %w", err)
 		}
@@ -206,7 +232,9 @@ func run() error {
 		})
 
 		tray := wireTray(win, events)
-		mygo.App.OnWillQuit(func(*mygo.QuitEvent) { tray.Destroy() })
+		if tray != nil {
+			mygo.App.OnWillQuit(func(*mygo.QuitEvent) { tray.Destroy() })
+		}
 
 		// A second launch (RequestSingleInstanceLock returned false
 		// there) means someone tried to start Watchtower again while

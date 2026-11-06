@@ -34,7 +34,8 @@ var quitting = false
 // click on Linux's AppIndicator, which has no click events), closing the
 // window hides it instead of quitting, and every new event fires a
 // desktop notification that opens the window to that event's server.
-// Returns the Tray so main can Destroy it in OnWillQuit.
+// Returns the Tray so main can Destroy it in OnWillQuit, or nil if the
+// platform has no tray.
 func wireTray(win *mygo.Window, events *event.Engine) *mygo.Tray {
 	show := func() {
 		win.Show()
@@ -48,6 +49,19 @@ func wireTray(win *mygo.Window, events *event.Engine) *mygo.Tray {
 		win.Update(func() {})
 	}
 
+	// No tray (e.g. WSL without an AppIndicator library) must not stop the
+	// app, and without one closing/minimizing has to behave normally —
+	// hiding the window would strand it.
+	tray, err := mygo.NewTray(mygo.TrayOptions{
+		Icon:           trayIcon(),
+		IconIsTemplate: true,
+		ToolTip:        "Watchtower",
+	})
+	if err != nil {
+		log.Printf("tray unavailable, running without it: %v", err)
+		return nil
+	}
+
 	win.OnClose(func(e *mygo.CloseEvent) {
 		if !quitting {
 			e.PreventDefault()
@@ -59,15 +73,6 @@ func wireTray(win *mygo.Window, events *event.Engine) *mygo.Tray {
 	// tray" means here: there's one way to tuck this app out of the way,
 	// not a taskbar-minimized window and a separate hidden-to-tray state.
 	win.OnMinimize(func() { win.Hide() })
-
-	tray, err := mygo.NewTray(mygo.TrayOptions{
-		Icon:           trayIcon(),
-		IconIsTemplate: true,
-		ToolTip:        "Watchtower",
-	})
-	if err != nil {
-		log.Fatal("tray: ", err)
-	}
 
 	menu := mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "Open Watchtower", Click: func(*mygo.MenuItem, *mygo.Window) { show() }},
