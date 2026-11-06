@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 
+	"aymanhs/watchtower/internal/collect"
 	"aymanhs/watchtower/internal/server"
 )
 
@@ -158,7 +159,7 @@ func (c *Client) Run(ctx context.Context, command string, timeout time.Duration)
 	select {
 	case err := <-done:
 		if err != nil {
-			return "", fmt.Errorf("command exited with error: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+			return "", fmt.Errorf("command exited with error: %w (stderr: %s)", err, collect.Excerpt(stderr.String()))
 		}
 		return stdout.String(), nil
 	case <-runCtx.Done():

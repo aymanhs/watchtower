@@ -22,8 +22,9 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
-	"strings"
 	"time"
+
+	"aymanhs/watchtower/internal/collect"
 )
 
 // Runner runs commands via "sh -c" on the local machine, bounded by
@@ -53,7 +54,7 @@ func (r *Runner) Run(ctx context.Context, command string, timeout time.Duration)
 		return "", fmt.Errorf("command timed out after %s", timeout)
 	}
 	if err != nil {
-		return "", fmt.Errorf("command exited with error: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("command exited with error: %w (stderr: %s)", err, collect.Excerpt(stderr.String()))
 	}
 	return stdout.String(), nil
 }

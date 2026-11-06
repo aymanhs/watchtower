@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,5 +131,16 @@ func TestExecute_PerInstanceKeysPassThrough(t *testing.T) {
 		if byName[name] != want {
 			t.Errorf("%s = %v, want %v", name, byName[name], want)
 		}
+	}
+}
+
+func TestExecute_ErrorQuotesOutputAndRejectsEmpty(t *testing.T) {
+	_, err := Execute(context.Background(), fakeRunner{out: "ok=1\nWARNING: disk gone\n"}, "s", testDef(), time.Second, nil)
+	if err == nil || !strings.Contains(err.Error(), "output: ok=1 | WARNING: disk gone") {
+		t.Errorf("parse error should quote the output, got %v", err)
+	}
+	_, err = Execute(context.Background(), fakeRunner{out: "\n  \n"}, "s", testDef(), time.Second, nil)
+	if err == nil || !strings.Contains(err.Error(), "no key=value output") {
+		t.Errorf("empty output should be an error, got %v", err)
 	}
 }

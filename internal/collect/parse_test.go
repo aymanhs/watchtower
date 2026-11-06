@@ -1,6 +1,9 @@
 package collect
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseLineOutput_Valid(t *testing.T) {
 	got, err := ParseLineOutput("total=100\nused=40\nfree=60\n\n")
@@ -39,5 +42,14 @@ func TestParseLineOutput_RejectsDuplicateKey(t *testing.T) {
 func TestParseLineOutput_RejectsEmptyKey(t *testing.T) {
 	if _, err := ParseLineOutput("=5\n"); err == nil {
 		t.Fatal("expected error for empty key, got nil")
+	}
+}
+
+func TestExcerpt(t *testing.T) {
+	if got := Excerpt(" a=1\nb  oops\n"); got != "a=1 | b oops" {
+		t.Errorf("Excerpt = %q", got)
+	}
+	if got := Excerpt(strings.Repeat("x", 1000)); len(got) > maxExcerpt+len("…") {
+		t.Errorf("not capped: %d", len(got))
 	}
 }

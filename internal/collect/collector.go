@@ -93,7 +93,10 @@ func executeShell(ctx context.Context, runner Runner, serverName string, def *me
 
 	values, err := ParseLineOutput(out)
 	if err != nil {
-		return nil, fmt.Errorf("metric %q on %s: %w", def.Name, serverName, err)
+		return nil, fmt.Errorf("metric %q on %s: %w (output: %s)", def.Name, serverName, err, Excerpt(out))
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("metric %q on %s: collector produced no key=value output", def.Name, serverName)
 	}
 
 	return observationsFrom(serverName, def, values), nil

@@ -7,6 +7,20 @@ import (
 	"strings"
 )
 
+// maxExcerpt bounds how much collector output is quoted in an error, which
+// becomes an event message (and lands in the events log and exports).
+const maxExcerpt = 300
+
+// Excerpt returns s trimmed, with newlines shown as " | " and cut to a
+// bounded length, for quoting collector output in an error message.
+func Excerpt(s string) string {
+	s = strings.Join(strings.Fields(strings.ReplaceAll(strings.TrimSpace(s), "\n", " | ")), " ")
+	if len(s) > maxExcerpt {
+		s = s[:maxExcerpt] + "…"
+	}
+	return s
+}
+
 // ParseLineOutput parses the collector output contract: one "key=value"
 // pair per line, values numeric. Blank lines are skipped. Any malformed
 // line is a hard error — malformed output must never be silently read as
