@@ -23,6 +23,9 @@ Nothing queued. Pick from Ideas.
   instead of a chart/gauge, rule kinds such as "any row where state is not
   running" or "row count", and a decision on what history keeps (probably only
   derived counts, not whole tables).
+- Server management follow-ups: a "test connection" button, and per-server
+  reload instead of swapping the whole collection (active alarms of a removed
+  server stay raised in the event engine until restart).
 - Additional credential providers; authentication currently supports SSH keys
   and the SSH agent only.
 - Warn at startup when several server entries share the same host/port/user.

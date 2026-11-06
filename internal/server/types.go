@@ -35,10 +35,10 @@ const (
 // key file; it is never a literal key or password.
 type Connection struct {
 	Type ConnectionType `yaml:"type"`
-	Host string         `yaml:"host"`
-	Port int            `yaml:"port"`
-	User string         `yaml:"user"`
-	Key  string         `yaml:"key"`
+	Host string         `yaml:"host,omitempty"`
+	Port int            `yaml:"port,omitempty"`
+	User string         `yaml:"user,omitempty"`
+	Key  string         `yaml:"key,omitempty"`
 }
 
 // MetricOverride is a server-specific metric override. It's the same shape

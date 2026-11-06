@@ -72,6 +72,22 @@ func (s *Store) SetCluster(serverName, cluster string) {
 	s.serverEntry(serverName).cluster = cluster
 }
 
+// Retain drops every server whose name is not in names, so a server removed
+// from the configuration disappears from the view.
+func (s *Store) Retain(names []string) {
+	keep := make(map[string]bool, len(names))
+	for _, n := range names {
+		keep[n] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for n := range s.servers {
+		if !keep[n] {
+			delete(s.servers, n)
+		}
+	}
+}
+
 // MarkStale records a failed collection: last-known measurements are kept
 // exactly as they were, Stale is set, and Status becomes StatusUnknown —
 // a failure must never look like the metric quietly returned to normal.

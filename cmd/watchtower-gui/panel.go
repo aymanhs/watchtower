@@ -80,6 +80,13 @@ func toolbar(c *ui.Context, win *mygo.Window, shells app.Shells) {
 	ui.Toolbar(c, func() {
 		ui.Text(c, "Watchtower").FontSize(12).TextColor(t.TextMuted)
 
+		if ui.Button(c.Key("servers"), "").Tooltip(serversTooltip()).
+			Disabled(runner == nil).
+			Children(func() { ui.Icon(c, serversIcon).FontSize(14) }).
+			Clicked() {
+			openServers()
+		}
+
 		if ui.Button(c.Key("events-toggle"), "").Tooltip("Show events").
 			Children(func() { ui.Icon(c, bellIcon).FontSize(14) }).
 			Clicked() {

@@ -150,10 +150,7 @@ func run(dataDir string, demoMode bool) error {
 		}
 	})
 
-	var (
-		tasks  []scheduler.Task
-		shells app.Shells
-	)
+	var tasks []scheduler.Task
 	if demoMode {
 		defs, err := metric.LoadDefinitions(paths.Metrics)
 		if err != nil {
@@ -174,8 +171,18 @@ func run(dataDir string, demoMode bool) error {
 		}
 		tasks = demo.Tasks(defs, events, store, history)
 	} else {
-		tasks, shells, err = app.Bootstrap(ctx, paths, events, store, history)
+		defs, err := metric.LoadDefinitions(paths.Metrics)
 		if err != nil {
+			return fmt.Errorf("load metric definitions: %w", err)
+		}
+		knownGroups = groupNames(defs)
+		serverDir = paths.Servers
+		runner = &app.Runner{
+			Paths: paths, Events: events, Store: store, History: history,
+			MaxConcurrent: maxConcurrentCollections,
+			OnError:       func(taskName string, err error) { log.Printf("[%s] ERROR: %v", taskName, err) },
+		}
+		if err := runner.Start(ctx); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
 	}
@@ -193,12 +200,17 @@ func run(dataDir string, demoMode bool) error {
 		}
 	}
 
-	sched := scheduler.New(maxConcurrentCollections, func(taskName string, err error) {
-		log.Printf("[%s] ERROR: %v", taskName, err)
-	})
 	schedulerDone := make(chan struct{})
 	go func() {
 		defer close(schedulerDone)
+		if runner != nil {
+			<-ctx.Done()
+			runner.Wait()
+			return
+		}
+		sched := scheduler.New(maxConcurrentCollections, func(taskName string, err error) {
+			log.Printf("[%s] ERROR: %v", taskName, err)
+		})
 		sched.Run(ctx, tasks)
 	}()
 
@@ -222,6 +234,11 @@ func run(dataDir string, demoMode bool) error {
 				win.Update(func() {})
 			}
 		}
+		requestUpdate = func(fn func()) {
+			if win != nil {
+				win.Update(fn)
+			}
+		}
 		chartCache = newAggCache(history.QueryAgg, repaint)
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title: "Watchtower",
@@ -236,7 +253,7 @@ func run(dataDir string, demoMode bool) error {
 			// Starts as a normal, visible window — only minimizing or
 			// closing it shrinks it down to the tray (wireTray's
 			// OnMinimize/OnClose), never the other way round at launch.
-			Content: ui.View(func(c *ui.Context) { render(c, win, store, events, shells, history, dashStore) }),
+			Content: ui.View(func(c *ui.Context) { render(c, win, store, events, shellsOf(runner), history, dashStore) }),
 		})
 
 		tray := wireTray(win, events)

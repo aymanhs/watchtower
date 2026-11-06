@@ -30,10 +30,11 @@ func render(c *ui.Context, win *mygo.Window, store *state.Store, events *event.E
 
 	ui.Column(c).Fill().Background(t.Background).Children(func() {
 		toolbar(c, win, shells)
+		serversModal(c)
 
 		if len(ungrouped) == 0 && len(clusters) == 0 {
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-				ui.Text(c, "waiting for data…").FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, waitingText()).FontSize(13).TextColor(t.TextMuted)
 			})
 			return
 		}

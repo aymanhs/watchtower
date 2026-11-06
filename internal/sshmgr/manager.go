@@ -111,6 +111,17 @@ func (m *Manager) Client(cfg *server.Config) *Client {
 	return c
 }
 
+// Close drops the connection, if any. The client stays usable: the next Run
+// dials again.
+func (c *Client) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+}
+
 // Connect establishes (or verifies) the persistent connection up front.
 // Callers should call this once at start-up for every configured server,
 // concurrently and independently, so that a metric's own timeout never has

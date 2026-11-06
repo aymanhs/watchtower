@@ -42,6 +42,13 @@ const connectWarmupTimeout = 10 * time.Second
 // has no remote connection to open a shell on.
 type Shells map[string]*sshmgr.Client
 
+// Close drops every client's connection.
+func (s Shells) Close() {
+	for _, c := range s {
+		c.Close()
+	}
+}
+
 // Bootstrap loads metric/group/server configuration, connects to every
 // server up front, and returns one scheduler.Task per (server, metric)
 // pair the servers' groups resolve to, plus Shells for opening an
@@ -62,13 +69,13 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 	log.Printf("loaded %d metric definitions", len(defs))
 
 	servers, err := server.LoadServers(paths.Servers)
+	if errors.Is(err, fs.ErrNotExist) {
+		err = nil // a fresh data dir: servers get added from the GUI
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("load server configs: %w", err)
 	}
-	if len(servers) == 0 {
-		return nil, nil, fmt.Errorf("no servers configured in %s (gitignored — see README)", paths.Servers)
-	}
-	log.Printf("loaded %d server configs", len(servers))
+	log.Printf("loaded %d server configs from %s", len(servers), paths.Servers)
 
 	groupReg, err := loadGroupRegistry(paths.Groups)
 	if err != nil {

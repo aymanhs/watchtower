@@ -3,7 +3,7 @@
 # library the app is built against never drift apart.
 MYGO_VERSION := v0.7.4
 
-.PHONY: build run-wsl test clean
+.PHONY: build run-wsl run-wsl-real test clean
 
 # Windows GUI build, cross-compiled from Linux via mygo's own build tool:
 # proper GUI-subsystem exe (no console flash), app name/version from
@@ -16,6 +16,10 @@ build:
 # target — Windows remains the only build.
 run-wsl:
 	LIBGL_ALWAYS_SOFTWARE=1 go run ./cmd/watchtower-gui -demo
+
+# Same, against real servers in ./data (the server manager works here).
+run-wsl-real:
+	LIBGL_ALWAYS_SOFTWARE=1 go run ./cmd/watchtower-gui
 
 test:
 	go test ./... -race

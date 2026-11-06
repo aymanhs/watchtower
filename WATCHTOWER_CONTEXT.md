@@ -62,6 +62,7 @@ Useful starting points:
 - Dashboard rendering/editor: `cmd/watchtower-gui/dashboard.go`
 - Main layout, right-pane tabs, events table, terminal, and chart helpers: `cmd/watchtower-gui/panel.go`
 - Events tab (type/range filters, collector outage durations, 100-per-page pager over up to 20000 in-memory events): `cmd/watchtower-gui/events.go`
+- Server management modal (add/edit/delete, `~/.ssh/config` import, live reload; unavailable in demo): `cmd/watchtower-gui/servers.go`, backed by `internal/server` (`Save`, `Delete`, `LoadSSHConfig`) and `internal/app.Runner`
 - Metrics tab (global measurement table with server, text/glob, and status filters, sortable columns, time range, copy/CSV export): `cmd/watchtower-gui/details.go`
 
 ## Configuration and runtime data
@@ -71,7 +72,7 @@ Useful starting points:
 - The data directory is `data/` by default; `-data <dir>` relocates it
   (`servers/`, `storage/`, `dashboards/`, `watchtower.log` all live under it).
   `-demo` defaults it to `data/demo/` so synthetic and real data never mix.
-- Per-server connection and override files: `data/servers/` (gitignored).
+- Per-server connection and override files: `data/servers/` (gitignored), one YAML file per server. The GUI writes them; a missing directory just means no servers yet. Saving or deleting a server reloads the collection live: `app.Runner` bootstraps the new configuration before stopping the old run, so a broken config keeps the previous one running. Keys are file paths only; no passwords are stored. YAML comments are not preserved on edit.
 - Global dashboard files: `data/dashboards/`.
 - Metric history: `data/storage/`.
 - `data/` is intentionally ignored by Git. It may contain real server names,
