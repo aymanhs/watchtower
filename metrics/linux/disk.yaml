@@ -1,11 +1,7 @@
 name: disk
-description: Filesystem usage, per real mounted volume
 groups:
   - basic
   - linux
-tags:
-  - system
-  - resource
 interval: 60s
 timeout: 5s
 collector:

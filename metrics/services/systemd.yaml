@@ -1,9 +1,5 @@
 name: systemd
-description: Whether one systemd unit is active and enabled
 groups:
-  - systemd
-tags:
-  - services
   - systemd
 interval: 30s
 timeout: 5s

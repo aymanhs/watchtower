@@ -80,22 +80,11 @@ func (s Scale) Fraction(value float64) float32 {
 }
 
 // MeasurementView is one named value within a metric, as last observed —
-// just a key and a number. There's no declared Unit/Type/Label/Format/
-// Scale travelling with it any more (internal/metric no longer declares
-// any of that); a dashboard widget's own SeriesRef.Label/Format, and its
-// Widget.Min/Max for a gauge/bars, are the only presentation this value
-// ever gets, decided at the point someone builds that widget, not here.
+// just a key and a number. Presentation is decided by the dashboard
+// widget, not by the collection engine.
 type MeasurementView struct {
 	Key   string // e.g. "available", "used" — the raw collector output key
 	Value float64
-}
-
-// DisplayLabel is what a GUI shows for this measurement's name absent a
-// dashboard series' own Label override — always Key; kept as a method,
-// not inlined at every call site, so a presentation reads "the display
-// name" once, in one place, regardless of what that resolves to.
-func (m MeasurementView) DisplayLabel() string {
-	return m.Key
 }
 
 // MetricView is one metric definition's current state on one server: its

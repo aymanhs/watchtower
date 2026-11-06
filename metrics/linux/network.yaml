@@ -1,11 +1,7 @@
 name: network
-description: Traffic and errors on the default network interface
 groups:
   - basic
   - linux
-tags:
-  - system
-  - resource
   - network
 interval: 15s
 timeout: 5s

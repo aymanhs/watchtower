@@ -31,7 +31,7 @@ func main() {
 	}()
 
 	events := event.NewEngine(0)
-	tasks, _, _, err := app.Bootstrap(ctx, app.DefaultPaths, events, nil /* no GUI store */, nil /* no history yet for console */, true /* print */)
+	tasks, _, err := app.Bootstrap(ctx, app.DefaultPaths, events, nil /* no GUI store */, nil /* no history yet for console */, true /* print */)
 	if err != nil {
 		log.Fatal(err)
 	}

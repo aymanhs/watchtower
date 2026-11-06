@@ -45,6 +45,10 @@ type MetricTask struct {
 	// failed to persist its history is not the same thing as a metric
 	// that failed to collect at all.
 	History *storage.Store
+	// Collect, if non-nil, replaces the real collector for this task —
+	// how demo fixtures feed synthetic observations through the same
+	// event/state/history pipeline as live collection.
+	Collect func(ctx context.Context) ([]collect.Observation, error)
 	// Print, if true, writes observations and event transitions to stdout
 	// — the console presentation's entire rendering.
 	Print bool
@@ -55,7 +59,15 @@ func (t *MetricTask) Interval() time.Duration { return t.CollectInterval }
 func (t *MetricTask) Timeout() time.Duration  { return t.Deadline }
 
 func (t *MetricTask) Run(ctx context.Context) error {
-	obs, err := collect.Execute(ctx, t.Client, t.ServerName, t.Def, t.Deadline, t.Config)
+	var (
+		obs []collect.Observation
+		err error
+	)
+	if t.Collect != nil {
+		obs, err = t.Collect(ctx)
+	} else {
+		obs, err = collect.Execute(ctx, t.Client, t.ServerName, t.Def, t.Deadline, t.Config)
+	}
 	now := time.Now()
 
 	if opEv := t.Events.EvaluateCollectorResult(t.ServerName, t.Def.Name, err, now); opEv != nil && t.Print {

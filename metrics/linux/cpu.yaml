@@ -1,11 +1,7 @@
 name: cpu
-description: Load averages and utilization
 groups:
   - basic
   - linux
-tags:
-  - system
-  - resource
 interval: 15s
 timeout: 10s
 collector:

@@ -5,9 +5,12 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,7 +19,9 @@ import (
 
 	"aymanhs/watchtower/internal/app"
 	"aymanhs/watchtower/internal/dashboard"
+	"aymanhs/watchtower/internal/demo"
 	"aymanhs/watchtower/internal/event"
+	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/scheduler"
 	"aymanhs/watchtower/internal/state"
 	"aymanhs/watchtower/internal/storage"
@@ -29,7 +34,36 @@ const maxConcurrentCollections = 16
 // nothing to chart, so it doesn't open a storage.Store at all.
 const historyRetention = 30 * 24 * time.Hour
 
+// initLogFile sends log output to data/watchtower.log: the Windows GUI
+// build has no console, so otherwise startup errors are invisible.
+func initLogFile() {
+	if err := os.MkdirAll("data", 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join("data", "watchtower.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	log.SetOutput(f)
+}
+
 func main() {
+	initLogFile()
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// demoBackfill is how much synthetic history demo mode pre-populates.
+const (
+	demoBackfillSpan = 3 * time.Hour
+	demoBackfillStep = 30 * time.Second
+)
+
+func run() error {
+	demoMode := flag.Bool("demo", false, "run against a synthetic fleet (no real servers); data goes under data/demo")
+	flag.Parse()
+
 	// SetName first — RequestSingleInstanceLock's lock is keyed by app
 	// name. Then the lock itself, before anything else starts (SSH
 	// connects, history opens, collection schedules): a second launch
@@ -39,47 +73,90 @@ func main() {
 	// and Linux, mygo's own mechanism, not anything OS-specific here.
 	mygo.App.SetName("Watchtower")
 	if !mygo.App.RequestSingleInstanceLock() {
-		return
+		log.Print("another Watchtower instance is already running; handing off to it")
+		return nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	events := event.NewEngine(0)
 	store := state.NewStore()
 
-	history, err := storage.Open("data/storage", historyRetention)
-	if err != nil {
-		log.Fatal(err)
+	storageDir, dashDir := "data/storage", "data/dashboards"
+	if *demoMode {
+		// Demo history is regenerated every launch so it always ends "now"
+		// and never mixes with (or pollutes) real history.
+		storageDir, dashDir = filepath.Join("data", "demo", "storage"), filepath.Join("data", "demo", "dashboards")
+		if err := os.RemoveAll(storageDir); err != nil {
+			return fmt.Errorf("reset demo history: %w", err)
+		}
 	}
-	defer history.Close()
+
+	history, err := storage.Open(storageDir, historyRetention)
+	if err != nil {
+		return fmt.Errorf("open history: %w", err)
+	}
+	defer func() {
+		if err := history.Close(); err != nil {
+			log.Printf("history close: %v", err)
+		}
+	}()
 	if err := history.ApplyRetention(); err != nil {
 		log.Printf("history: initial retention sweep: %v", err)
 	}
 
-	tasks, shells, _, err := app.Bootstrap(ctx, app.DefaultPaths, events, store, history, false /* no console printing */)
-	if err != nil {
-		log.Fatal(err)
+	var (
+		tasks  []scheduler.Task
+		shells app.Shells
+	)
+	if *demoMode {
+		defs, err := metric.LoadDefinitions(app.DefaultPaths.Metrics)
+		if err != nil {
+			return fmt.Errorf("load metric definitions: %w", err)
+		}
+		if err := demo.Backfill(history, defs, time.Now(), demoBackfillSpan, demoBackfillStep); err != nil {
+			return fmt.Errorf("demo backfill: %w", err)
+		}
+		tasks = demo.Tasks(defs, events, store, history)
+	} else {
+		tasks, shells, err = app.Bootstrap(ctx, app.DefaultPaths, events, store, history, false /* no console printing */)
+		if err != nil {
+			return fmt.Errorf("bootstrap: %w", err)
+		}
 	}
 
 	// Dashboards live in their own files now, independent of server
 	// config (see internal/dashboard's package doc) — loaded here, not
 	// inside app.Bootstrap, same reason history is: a GUI-only concern
 	// the console binary has no use for at all.
-	dashStore, err := dashboard.LoadStore("data/dashboards")
+	dashStore, err := dashboard.LoadStore(dashDir)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("load dashboards: %w", err)
+	}
+	if *demoMode {
+		if err := demo.SeedDashboard(dashStore); err != nil {
+			return fmt.Errorf("seed demo dashboard: %w", err)
+		}
 	}
 
 	sched := scheduler.New(maxConcurrentCollections, func(taskName string, err error) {
 		log.Printf("[%s] ERROR: %v", taskName, err)
 	})
-	go sched.Run(ctx, tasks)
+	schedulerDone := make(chan struct{})
+	go func() {
+		defer close(schedulerDone)
+		sched.Run(ctx, tasks)
+	}()
 
 	// Quit can arrive from the tray menu's "Quit" (RoleQuit), the OS
 	// signal handler below, or Cmd+Q — all of them must let the window's
 	// own Close go through instead of wireTray's OnClose turning it into
 	// a Hide (see quitting in tray.go).
-	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { quitting = true })
+	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
+		quitting = true
+		cancel()
+	})
 	mygo.App.WhenReady(func() {
 		// var, not :=: the Content closure below refers to win from
 		// inside the very statement that would otherwise declare it —
@@ -121,8 +198,13 @@ func main() {
 		go func() {
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
-			for range ticker.C {
-				win.Update(func() {})
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					win.Update(func() {})
+				}
 			}
 		}()
 	})
@@ -137,13 +219,21 @@ func main() {
 	// cancel+Quit→Run returns→defers run path Ctrl+C already had.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
-		<-sigCh
-		cancel()
-		mygo.App.Quit()
+		select {
+		case <-sigCh:
+			cancel()
+			mygo.App.Quit()
+		case <-ctx.Done():
+		}
 	}()
 
-	if err := mygo.App.Run(); err != nil {
-		log.Fatal(err)
+	runErr := mygo.App.Run()
+	cancel()
+	<-schedulerDone
+	if runErr != nil {
+		return fmt.Errorf("run GUI: %w", runErr)
 	}
+	return nil
 }

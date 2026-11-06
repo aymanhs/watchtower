@@ -80,9 +80,8 @@ func (w WidgetType) valid() bool {
 type SeriesRef struct {
 	Selector string `yaml:"selector"`
 
-	// Label overrides the measurement's own DisplayLabel for this
-	// series — unset means use whatever the metric definition already
-	// calls it. When a selector resolves to several matches, this is
+	// Label overrides the measurement key for this series — unset means
+	// use the raw key. When a selector resolves to several matches, this is
 	// used as a prefix/template rather than a single fixed name; the
 	// renderer still needs to tell them apart (e.g. by server name).
 	Label string `yaml:"label,omitempty"`

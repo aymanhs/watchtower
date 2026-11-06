@@ -1,10 +1,6 @@
 name: nats
-description: NATS server statistics, via its HTTP monitoring endpoint (varz)
 groups:
   - messaging
-tags:
-  - messaging
-  - nats
 interval: 15s
 timeout: 5s
 collector:

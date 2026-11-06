@@ -140,10 +140,8 @@ func (r EventRule) Recovered(value float64) bool {
 // stop; see SplitInstance for the one piece of structure still imposed
 // on a raw key (its optional instance qualifier).
 type Definition struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description,omitempty"`
-	Groups      []string `yaml:"groups,omitempty"`
-	Tags        []string `yaml:"tags,omitempty"`
+	Name   string   `yaml:"name"`
+	Groups []string `yaml:"groups,omitempty"`
 
 	Interval Duration `yaml:"interval"`
 	Timeout  Duration `yaml:"timeout"`

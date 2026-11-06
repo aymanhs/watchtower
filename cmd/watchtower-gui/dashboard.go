@@ -18,6 +18,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -42,7 +43,21 @@ var formatVerb = regexp.MustCompile(`%[-+ 0#]*[0-9]*(?:\.[0-9]+)?([a-zA-Z])`)
 // ...) gets the float64 as-is. A malformed format string still can't
 // panic — Go's fmt never does — it just prints its own "%!verb(...)"
 // text, visibly wrong rather than silently blank.
+//
+// Two extras beyond plain printf: the keyword "bytes" renders a binary
+// human-readable size ("250.1 GiB"), and a "/N:" prefix divides the value
+// by N first ("/1073741824:%.1f GB" — a scale factor).
 func applyFormat(format string, value float64) string {
+	if strings.TrimSpace(format) == "bytes" {
+		return humanBytes(value)
+	}
+	if rest, ok := strings.CutPrefix(format, "/"); ok {
+		if div, tail, ok := strings.Cut(rest, ":"); ok {
+			if d, err := strconv.ParseFloat(strings.TrimSpace(div), 64); err == nil && d != 0 {
+				format, value = tail, value/d
+			}
+		}
+	}
 	if m := formatVerb.FindStringSubmatch(format); m != nil {
 		switch m[1] {
 		case "d", "b", "o", "O", "x", "X", "c":
@@ -50,6 +65,26 @@ func applyFormat(format string, value float64) string {
 		}
 	}
 	return fmt.Sprintf(format, value)
+}
+
+// humanBytes renders n with the largest binary unit keeping it under 1024.
+func humanBytes(n float64) string {
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
+	neg := n < 0
+	n = math.Abs(n)
+	i := 0
+	for n >= 1024 && i < len(units)-1 {
+		n /= 1024
+		i++
+	}
+	out := fmt.Sprintf("%.0f %s", n, units[i])
+	if i > 0 {
+		out = fmt.Sprintf("%.1f %s", n, units[i])
+	}
+	if neg {
+		out = "-" + out
+	}
+	return out
 }
 
 // seriesValue is one series' number, formatted the way it was asked to
@@ -124,6 +159,10 @@ var (
 	// *float64; always a whole number in [0, maxSpan] in practice.
 	addWidgetSpanX = float64(0)
 	addWidgetSpanY = float64(0)
+	// addWidgetMin/addWidgetMax are a gauge/bars widget's scale as typed;
+	// both blank means no scale (Widget.Min/Max nil).
+	addWidgetMin = ""
+	addWidgetMax = ""
 	// editWidgetIdx is -1 while the modal is adding a brand new widget,
 	// or the index (into the selected server's own Dashboard slice)
 	// being edited in place — confirmAddWidget checks this to decide
@@ -189,7 +228,7 @@ func dashboardPane(c *ui.Context, all []state.ServerView, dashStore *dashboard.S
 		dashboardPicker(c, names, dashStore)
 		if selectedDashboard == "" {
 			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-				ui.Text(c, "no dashboards yet — click + New to create one").FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, "no dashboards yet — use the new dashboard button above to create one").FontSize(13).TextColor(t.TextMuted)
 			})
 			return
 		}
@@ -211,10 +250,15 @@ func dashboardPicker(c *ui.Context, names []string, dashStore *dashboard.Store) 
 		} else {
 			ui.Text(c, "none yet").FontSize(11).TextColor(t.TextMuted).Grow(1)
 		}
-		if ui.Button(c.Key("new-dashboard"), "+ New").Clicked() {
+		ui.Box(c).Width(1).Height(20).Background(t.Border)
+		if squareIconButton(c, "new-dashboard", newDashboardIcon, "New dashboard").Clicked() {
 			newDashboardName = ""
 			newDashboardErr = ""
 			newDashboardOpen = true
+		}
+		if squareIconButton(c, "add-widget", addWidgetIcon, "Add widget to this dashboard").Clicked() && selectedDashboard != "" {
+			resetWidgetDraft()
+			addWidgetOpen = true
 		}
 	})
 	newDashboardModal(c, dashStore)
@@ -264,15 +308,14 @@ func confirmNewDashboard(dashStore *dashboard.Store) {
 	newDashboardOpen = false
 }
 
-// dashboardGrid renders d's own widget grid plus the "+ Add widget" tile
-// every dashboard ends with. A real ui.Grid, not a wrapping row: mygo's
+// dashboardGrid renders d's own widget grid. A real ui.Grid, not a wrapping row: mygo's
 // Grid supports ColumnSpan/RowSpan (confirmed by reading ui/grid.go
 // before relying on it), which is what lets a chart tile span 2x2 cells
 // instead of being stuck at the same size as a gauge/number/pie tile.
 //
 // If one widget is maximized (maximizedDashboard/maximizedIdx), it alone
-// fills the pane — the rest of the grid, and the "+ Add widget" tile,
-// don't render at all until it's restored.
+// fills the pane — the rest of the grid
+// doesn't render until it's restored.
 func dashboardGrid(c *ui.Context, d *dashboard.Dashboard, all []state.ServerView, dashStore *dashboard.Store, history *storage.Store, paneWidth float32) {
 	// Snapshot once per frame: a tile's own Clicked()/Drop() handling
 	// (onRemove/onReorder below) runs synchronously, in the middle of
@@ -290,6 +333,7 @@ func dashboardGrid(c *ui.Context, d *dashboard.Dashboard, all []state.ServerView
 		ui.Box(c).Fill().Padding(12).Children(func() {
 			widgetTile(c, d, widgets[maximizedIdx], all, dashStore, maximizedIdx, history, true)
 		})
+		addWidgetModal(c, d, all, dashStore)
 		return
 	}
 
@@ -306,7 +350,6 @@ func dashboardGrid(c *ui.Context, d *dashboard.Dashboard, all []state.ServerView
 			for i, w := range widgets {
 				widgetTile(c, d, w, all, dashStore, i, history, false)
 			}
-			addWidgetTile(c)
 		})
 	})
 	addWidgetModal(c, d, all, dashStore)
@@ -505,7 +548,7 @@ func widgetCard(c *ui.Context, key string, idx, spanX, spanY int, title string, 
 
 // widgetTitle is what a tile's header shows: the widget's own Title if
 // it set one, else the one series' own label (a dashboard-only override,
-// then the measurement's own DisplayLabel), else its type.
+// then the measurement key), else its type.
 func widgetTitle(w dashboard.Widget) string {
 	if w.Title != "" {
 		return w.Title
@@ -566,13 +609,13 @@ func needsServerQualifier(items []resolvedSeries) bool {
 }
 
 // matchLabel is one resolvedSeries' own display label: its ref's Label
-// override if it set one, else the measurement's own DisplayLabel,
+// override if it set one, else the measurement's own key,
 // prefixed with the server name when qualify says several servers are
 // in play together.
 func matchLabel(it resolvedSeries, qualify bool) string {
 	label := it.ref.Label
 	if label == "" {
-		label = it.match.Measurement.DisplayLabel()
+		label = it.match.Measurement.Key
 	}
 	if qualify {
 		return it.match.Server + ": " + label
@@ -594,7 +637,7 @@ func barLabel(it resolvedSeries, qualify bool) string {
 		if it.match.Instance != "" {
 			label = it.match.Instance
 		} else {
-			label = it.match.Measurement.DisplayLabel()
+			label = it.match.Measurement.Key
 		}
 	}
 	if qualify {
@@ -946,25 +989,6 @@ func chartTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, histor
 	})
 }
 
-// addWidgetTile is the grid's last cell: a dashed-feeling plain button
-// the same size as every other tile, opening the add-widget modal with a
-// fresh draft.
-func addWidgetTile(c *ui.Context) {
-	t := c.Theme()
-	if ui.Button(c.Key("add-widget"), "").Size(tileWidth, tileHeight).
-		Background(t.Surface).Radius(8).BorderColor(t.Border).Border(1, t.Border).
-		Tooltip("Add a widget").
-		Children(func() {
-			ui.Column(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Gap(4).Children(func() {
-				ui.Text(c, "+").FontSize(24).TextColor(t.TextMuted)
-				ui.Text(c, "Add widget").FontSize(11).TextColor(t.TextMuted)
-			})
-		}).Clicked() {
-		resetWidgetDraft()
-		addWidgetOpen = true
-	}
-}
-
 // resetWidgetDraft clears the add/edit modal's draft state back to "add
 // a brand new widget" — editWidgetIdx = -1, everything else at its zero
 // value/default type.
@@ -975,10 +999,12 @@ func resetWidgetDraft() {
 	addWidgetSeriesPicks = nil
 	addWidgetSpanX = 0
 	addWidgetSpanY = 0
+	addWidgetMin = ""
+	addWidgetMax = ""
 	editWidgetIdx = -1
 }
 
-// openWidgetEditor opens the same modal addWidgetTile does, but
+// openWidgetEditor opens the same modal the picker's add button does, but
 // pre-filled from w and in "edit this one in place" mode
 // (confirmAddWidget replaces index idx instead of appending) — reusing
 // one modal/one draft-state/one confirm path for both add and edit, not
@@ -993,6 +1019,10 @@ func openWidgetEditor(idx int, w dashboard.Widget) {
 	addWidgetSpanX = float64(w.RawSpanX())
 	addWidgetSpanY = float64(w.RawSpanY())
 	addWidgetSeriesPicks = append([]dashboard.SeriesRef(nil), w.Series...)
+	if w.Min != nil && w.Max != nil {
+		addWidgetMin = strconv.FormatFloat(*w.Min, 'f', -1, 64)
+		addWidgetMax = strconv.FormatFloat(*w.Max, 'f', -1, 64)
+	}
 	addWidgetOpen = true
 }
 
@@ -1105,6 +1135,20 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 			ui.Text(c, "Title (optional)").FontSize(11).TextColor(t.TextMuted)
 			ui.TextInput(c, &addWidgetTitle)
 
+			if addWidgetType == dashboard.WidgetGauge || addWidgetType == dashboard.WidgetBars {
+				ui.Text(c, "Scale (0% to 100% of the dial/bar — e.g. 0 and 100 for percentages)").FontSize(11).TextColor(t.TextMuted)
+				ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+					ui.Column(c).Gap(2).Children(func() {
+						ui.Text(c, "Min").FontSize(9).TextColor(t.TextMuted)
+						ui.TextInput(c, &addWidgetMin).Placeholder("0").Width(90)
+					})
+					ui.Column(c).Gap(2).Children(func() {
+						ui.Text(c, "Max").FontSize(9).TextColor(t.TextMuted)
+						ui.TextInput(c, &addWidgetMax).Placeholder("100").Width(90)
+					})
+				})
+			}
+
 			ui.Text(c, "Series").FontSize(11).TextColor(t.TextMuted)
 			ui.Text(c, "type or pick a suggestion — * matches anything (*/cpu.usage, cluster:name/cpu.usage, jumpbox/disk.*.used_percent)").FontSize(9).TextColor(t.TextMuted)
 			if len(options) == 0 {
@@ -1165,7 +1209,7 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 						Tooltip("Label (optional) — shown instead of the metric's own name")
 				case 2:
 					flat(ui.TextInput(c, &addWidgetSeriesPicks[row].Format)).Placeholder("Format").
-						Tooltip("Format (optional, e.g. %.0f, %5.2fGB, %6.2f%%)")
+						Tooltip("Format (optional): %.0f, %6.2f%%, bytes (human size), or /1073741824:%.1f GB (divide first)")
 				case 3:
 					if squareIconButton(c, fmt.Sprintf("series-remove-%d", row), removeIcon, "Remove").Clicked() {
 						addWidgetSeriesPicks = append(addWidgetSeriesPicks[:row:row], addWidgetSeriesPicks[row+1:]...)
@@ -1193,6 +1237,27 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 	})
 }
 
+// parseScale turns the editor's Min/Max text into Widget.Min/Max: both
+// blank means no scale, one blank means the default 0 (min) or 100 (max).
+func parseScale(minText, maxText string) (min, max *float64, err error) {
+	minText, maxText = strings.TrimSpace(minText), strings.TrimSpace(maxText)
+	if minText == "" && maxText == "" {
+		return nil, nil, nil
+	}
+	lo, hi := 0.0, 100.0
+	if minText != "" {
+		if lo, err = strconv.ParseFloat(minText, 64); err != nil {
+			return nil, nil, fmt.Errorf("scale min %q is not a number", minText)
+		}
+	}
+	if maxText != "" {
+		if hi, err = strconv.ParseFloat(maxText, 64); err != nil {
+			return nil, nil, fmt.Errorf("scale max %q is not a number", maxText)
+		}
+	}
+	return &lo, &hi, nil
+}
+
 // confirmAddWidget builds a dashboard.Widget from the modal's draft
 // state, validates it, and persists it via dashStore.Save — errors (an
 // empty picker, a rejected save) show inline in the modal instead of
@@ -1212,6 +1277,14 @@ func confirmAddWidget(d *dashboard.Dashboard, dashStore *dashboard.Store) {
 		}
 	}
 	w := dashboard.Widget{Type: addWidgetType, Title: addWidgetTitle, Series: series, SpanX: int(addWidgetSpanX), SpanY: int(addWidgetSpanY)}
+	if addWidgetType == dashboard.WidgetGauge || addWidgetType == dashboard.WidgetBars {
+		min, max, err := parseScale(addWidgetMin, addWidgetMax)
+		if err != nil {
+			addWidgetErr = err.Error()
+			return
+		}
+		w.Min, w.Max = min, max
+	}
 	if err := w.Validate(); err != nil {
 		addWidgetErr = err.Error()
 		return

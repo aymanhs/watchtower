@@ -1,11 +1,7 @@
 name: memory
-description: System memory statistics
 groups:
   - basic
   - linux
-tags:
-  - system
-  - resource
 interval: 10s
 timeout: 5s
 collector:

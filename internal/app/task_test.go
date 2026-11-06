@@ -84,9 +84,6 @@ func TestMetricTask_StoresRawMeasurements(t *testing.T) {
 		if !ok || got.Value != want {
 			t.Errorf("%s = %+v, want value %v", key, got, want)
 		}
-		if got.DisplayLabel() != key {
-			t.Errorf("%s.DisplayLabel() = %q, want %q (always just Key now)", key, got.DisplayLabel(), key)
-		}
 	}
 
 	// used_percent at 50% breaches nothing yet.

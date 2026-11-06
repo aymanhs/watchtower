@@ -1,10 +1,5 @@
 name: docker
-description: Docker daemon container/image counts
 groups:
-  - docker
-tags:
-  - services
-  - docker
   - docker
 interval: 30s
 timeout: 5s

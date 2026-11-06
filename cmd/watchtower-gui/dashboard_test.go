@@ -67,7 +67,7 @@ func TestNeedsServerQualifier(t *testing.T) {
 }
 
 func TestMatchLabel(t *testing.T) {
-	mv := state.MeasurementView{Key: "load1"} // DisplayLabel falls back to Key with no Label set
+	mv := state.MeasurementView{Key: "load1"}
 	it := resolvedSeries{ref: dashboard.SeriesRef{}, match: dashboard.Match{Server: "jumpbox", Measurement: mv}}
 	if got := matchLabel(it, false); got != "load1" {
 		t.Errorf("got %q, want load1", got)
@@ -98,7 +98,7 @@ func TestBarLabel(t *testing.T) {
 	// matchLabel.
 	noInstance := resolvedSeries{ref: dashboard.SeriesRef{}, match: dashboard.Match{Server: "jumpbox", Measurement: mv}}
 	if got := barLabel(noInstance, false); got != "used_percent" {
-		t.Errorf("got %q, want used_percent (DisplayLabel fallback)", got)
+		t.Errorf("got %q, want used_percent (measurement key fallback)", got)
 	}
 
 	// ref.Label still wins outright over the instance.
@@ -548,5 +548,35 @@ func TestBuildPieSlice_FullCircleCloses(t *testing.T) {
 	p2 := buildPieSlice(50, 50, 40, -90, 270)
 	if p2 == nil {
 		t.Fatal("buildPieSlice returned nil for a 270-degree slice")
+	}
+}
+
+func TestParseScale(t *testing.T) {
+	if lo, hi, err := parseScale("", ""); lo != nil || hi != nil || err != nil {
+		t.Errorf("blank = %v %v %v, want no scale", lo, hi, err)
+	}
+	lo, hi, err := parseScale("", "50")
+	if err != nil || *lo != 0 || *hi != 50 {
+		t.Errorf("max only = %v %v %v, want 0..50", lo, hi, err)
+	}
+	if _, _, err := parseScale("x", ""); err == nil {
+		t.Error("non-numeric min should error")
+	}
+}
+
+func TestApplyFormatBytesAndFactor(t *testing.T) {
+	for _, tc := range []struct {
+		format string
+		value  float64
+		want   string
+	}{
+		{"bytes", 268888507093.01, "250.4 GiB"},
+		{"bytes", 512, "512 B"},
+		{"/1073741824:%.1f GB", 268888507093, "250.4 GB"},
+		{"/0:%.0f", 5, "/0:5"}, // invalid divisor: left as written
+	} {
+		if got := applyFormat(tc.format, tc.value); got != tc.want {
+			t.Errorf("applyFormat(%q, %v) = %q, want %q", tc.format, tc.value, got, tc.want)
+		}
 	}
 }
