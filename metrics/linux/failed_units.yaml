@@ -11,3 +11,11 @@ collector:
       BEGIN { printf "[" }
       { printf "%s{\"unit\":\"%s\",\"active\":\"%s\",\"sub\":\"%s\"}", (NR>1 ? "," : ""), $1, $3, $4 }
       END { print "]" }'
+emit:
+  count: count
+events:
+  - name: failed_units.warning
+    measurement: count
+    condition: above
+    threshold: 0
+    severity: warning

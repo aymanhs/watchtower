@@ -15,10 +15,8 @@ Nothing queued. Pick from Ideas.
 
 ## Ideas
 
-- Objects follow-ups: dashboard widgets bound to an object (table and
-  key/value), rules over objects (e.g. count of rows where state is not
-  running), `emit:` to derive metrics from an object, and docker/other object
-  definitions beyond `processes` and `failed_units`.
+- Objects follow-ups: more object definitions (docker containers, listening
+  ports, pending updates), and a table view for objects shaped as flat lists.
 - Server management follow-ups: a "test connection" button, and per-server
   reload instead of swapping the whole collection (active alarms of a removed
   server stay raised in the event engine until restart).

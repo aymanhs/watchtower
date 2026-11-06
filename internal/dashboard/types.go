@@ -60,11 +60,14 @@ const (
 	// measurement's own label, or the server name when matches span
 	// several servers — see cmd/watchtower-gui's matchLabel/barLabel.
 	WidgetBars WidgetType = "bars"
+	// WidgetObject shows the latest value of every object a series
+	// selector matches (e.g. "jumpbox/processes.*"), pretty-printed.
+	WidgetObject WidgetType = "object"
 )
 
 func (w WidgetType) valid() bool {
 	switch w {
-	case WidgetChart, WidgetGauge, WidgetNumber, WidgetPie, WidgetBars:
+	case WidgetChart, WidgetGauge, WidgetNumber, WidgetPie, WidgetBars, WidgetObject:
 		return true
 	default:
 		return false
@@ -201,7 +204,7 @@ func (w Widget) Scale() (min, max float64, ok bool) {
 // story wide or tall), only an explicit SpanX/SpanY ever pulls them
 // apart.
 func (t WidgetType) defaultSpan() int {
-	if t == WidgetChart || t == WidgetBars {
+	if t == WidgetChart || t == WidgetBars || t == WidgetObject {
 		return 2
 	}
 	return 1

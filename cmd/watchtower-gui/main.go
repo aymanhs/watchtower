@@ -180,7 +180,7 @@ func run(dataDir string, demoMode bool) error {
 				return fmt.Errorf("demo backfill: %w", err)
 			}
 		}
-		tasks = append(demo.Tasks(defs, events, store, history), demo.ObjectTasks(events, objects)...)
+		tasks = append(demo.Tasks(defs, events, store, history), demo.ObjectTasks(events, objects, store, history)...)
 	} else {
 		defs, err := metric.LoadDefinitions(paths.Metrics)
 		if err != nil {

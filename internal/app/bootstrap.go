@@ -118,6 +118,7 @@ func Bootstrap(ctx context.Context, paths Paths, events *event.Engine, store *st
 						ServerName: cfg.Name, Def: def, Client: runner,
 						CollectInterval: interval, Deadline: timeout,
 						Config: config, Events: events, Objects: objects,
+						Store: store, History: history,
 					})
 				}
 				continue

@@ -11,3 +11,5 @@ collector:
       BEGIN { printf "[" }
       { printf "%s{\"pid\":%d,\"user\":\"%s\",\"cpu\":%s,\"mem\":%s,\"cmd\":\"%s\"}", (NR>1 ? "," : ""), $1, $2, $3, $4, $5 }
       END { print "]" }'
+emit:
+  top_cpu: max cpu

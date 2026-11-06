@@ -129,10 +129,18 @@ prints JSON; it is a separate, usually slower job than metrics
 event. `app.ObjectTask` stores results in `internal/objstore` under
 `<server>/<definition>`: the latest in memory, and each *changed* value as one
 JSON line in `storage/objects-YYYY-MM-DD.jsonl` (same retention sweep as
-metrics; the latest is restored from those files at startup). Object
-definitions cannot have event rules. The GUI's Objects tab shows the selected
-server's latest value (table for a list of records, key/value for one record)
-and lets you view any stored change.
+metrics; the latest is restored from those files at startup).
+
+`emit` derives numbers from an object (`internal/metric/emit.go`): key ->
+expression, one of `count`, `count where FIELD OP VALUE`,
+`sum|min|max|avg FIELD`, `value PATH`. Each becomes the ordinary metric
+`<definition>.<key>` (state, history, charts) and event rules on the
+definition apply to it, so alerting on objects is alerting on emitted metrics.
+
+The GUI shows objects pretty-printed with syntax colors (key order kept): the
+Objects tab for the selected server, with a picker over stored changes, and
+the `object` dashboard widget, whose series selector is
+`server/object.*` (clusters and globs work as for metrics).
 
 ## Chart history
 

@@ -11,26 +11,32 @@ import (
 	"aymanhs/watchtower/internal/metric"
 	"aymanhs/watchtower/internal/objstore"
 	"aymanhs/watchtower/internal/scheduler"
+	"aymanhs/watchtower/internal/state"
+	"aymanhs/watchtower/internal/storage"
 )
 
 // ObjectTasks gives every fake server a "processes" and a "containers"
 // object, fed through the same pipeline as live object collection.
-func ObjectTasks(events *event.Engine, objects *objstore.Store) []scheduler.Task {
+func ObjectTasks(events *event.Engine, objects *objstore.Store, store *state.Store, history *storage.Store) []scheduler.Task {
 	var tasks []scheduler.Task
 	for _, srv := range Fleet() {
 		for _, o := range []struct {
 			name     string
 			interval time.Duration
 			gen      func(*rand.Rand, time.Time) any
+			emit     map[string]string
+			events   []metric.EventRule
 		}{
-			{"processes", 15 * time.Second, processes},
-			{"containers", 30 * time.Second, containers},
+			{"processes", 15 * time.Second, processes, map[string]string{"top_cpu": "max cpu"}, nil},
+			{"containers", 30 * time.Second, containers,
+				map[string]string{"total": "count", "unhealthy": "count where state != running"},
+				[]metric.EventRule{{Name: "containers.unhealthy", Measurement: "unhealthy", Condition: metric.ConditionAbove, Threshold: 0, Severity: metric.SeverityWarning}}},
 		} {
 			rng := rand.New(rand.NewSource(int64(len(srv.Name)) * 7919))
 			gen := o.gen
-			def := &metric.Definition{Name: o.name, Kind: metric.KindObject}
+			def := &metric.Definition{Name: o.name, Kind: metric.KindObject, Emit: o.emit, Events: o.events}
 			tasks = append(tasks, &app.ObjectTask{
-				ServerName: srv.Name, Def: def, Events: events, Objects: objects,
+				ServerName: srv.Name, Def: def, Events: events, Objects: objects, Store: store, History: history,
 				CollectInterval: o.interval, Deadline: o.interval / 2,
 				Collect: func(context.Context) (json.RawMessage, error) {
 					return json.Marshal(gen(rng, time.Now()))

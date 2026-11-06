@@ -162,6 +162,10 @@ type Definition struct {
 	Kind Kind `yaml:"kind,omitempty"`
 	// MaxBytes caps an object's size; 0 means DefaultMaxObjectBytes.
 	MaxBytes int `yaml:"max_bytes,omitempty"`
+	// Emit derives numbers from an object: key -> expression (see
+	// ParseEmit). Each becomes the metric "<name>.<key>", with history,
+	// charts and event rules like any other.
+	Emit map[string]string `yaml:"emit,omitempty"`
 
 	Interval Duration `yaml:"interval"`
 	Timeout  Duration `yaml:"timeout"`
@@ -218,11 +222,16 @@ func (d *Definition) Validate() error {
 		if d.Collector.Type != CollectorShell {
 			return fmt.Errorf("metric %q: object definitions need a shell collector", d.Name)
 		}
-		if len(d.Events) > 0 {
-			return fmt.Errorf("metric %q: object definitions can't have event rules", d.Name)
+		for key, expr := range d.Emit {
+			if _, err := ParseEmit(expr); err != nil {
+				return fmt.Errorf("metric %q: emit %q: %w", d.Name, key, err)
+			}
 		}
 	default:
 		return fmt.Errorf("metric %q: unknown kind %q", d.Name, d.Kind)
+	}
+	if d.Kind != KindObject && len(d.Emit) > 0 {
+		return fmt.Errorf("metric %q: emit is only for object definitions", d.Name)
 	}
 	if len(d.Groups) == 0 {
 		return fmt.Errorf("metric %q: must belong to at least one group", d.Name)

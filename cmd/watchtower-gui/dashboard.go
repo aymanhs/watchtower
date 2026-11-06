@@ -397,6 +397,8 @@ func widgetTile(c *ui.Context, d *dashboard.Dashboard, w dashboard.Widget, all [
 		gaugeTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	case dashboard.WidgetPie:
 		pieTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
+	case dashboard.WidgetObject:
+		objectTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	case dashboard.WidgetBars:
 		barsTile(c, w, all, idx, maximized, onRemove, onToggleMaximize, onEdit, onReorder)
 	default: // WidgetNumber, and any future type default to a plain value
@@ -1129,7 +1131,7 @@ func availableSeries(all []state.ServerView) []string {
 // prefer a percent-scaled option by, so every widget type just gets
 // whatever sorts first — an accepted loss of that simplification.
 func defaultSeriesPick(options []string, all []state.ServerView, widgetType dashboard.WidgetType) string {
-	if len(options) == 0 {
+	if len(options) == 0 || widgetType == dashboard.WidgetObject {
 		return ""
 	}
 	return options[0]
@@ -1148,7 +1150,7 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 			ui.Text(c, modalTitle).FontSize(13).Bold()
 
 			ui.Text(c, "Type").FontSize(11).TextColor(t.TextMuted)
-			typeOptions := []string{string(dashboard.WidgetChart), string(dashboard.WidgetGauge), string(dashboard.WidgetNumber), string(dashboard.WidgetPie), string(dashboard.WidgetBars)}
+			typeOptions := []string{string(dashboard.WidgetChart), string(dashboard.WidgetGauge), string(dashboard.WidgetNumber), string(dashboard.WidgetPie), string(dashboard.WidgetBars), string(dashboard.WidgetObject)}
 			typeSel := string(addWidgetType)
 			ui.Select(c, &typeSel, typeOptions)
 			addWidgetType = dashboard.WidgetType(typeSel)
@@ -1182,6 +1184,9 @@ func addWidgetModal(c *ui.Context, d *dashboard.Dashboard, all []state.ServerVie
 			}
 
 			ui.Text(c, "Series").FontSize(11).TextColor(t.TextMuted)
+			if addWidgetType == dashboard.WidgetObject {
+				ui.Text(c, "an object selector: server/object.* (e.g. jumpbox/processes.*, */containers.*, cluster:prod/failed_units.*)").FontSize(9).TextColor(t.TextMuted)
+			}
 			ui.Text(c, "type or pick a suggestion — * matches anything (*/cpu.usage, cluster:name/cpu.usage, jumpbox/disk.*.used_percent)").FontSize(9).TextColor(t.TextMuted)
 			if len(options) == 0 {
 				ui.Text(c, "nothing is reporting yet to suggest from — you can still type a selector").FontSize(10).TextColor(t.TextMuted)

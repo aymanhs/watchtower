@@ -1,16 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 
+	"aymanhs/watchtower/internal/dashboard"
 	"aymanhs/watchtower/internal/objstore"
+	"aymanhs/watchtower/internal/selector"
 	"aymanhs/watchtower/internal/state"
 )
 
@@ -29,9 +31,8 @@ var (
 
 const latestLabel = "latest"
 
-// objectsPane shows the selected server's objects: a table for a list of
-// records, key/value rows for a single record, plus a picker over its
-// stored changes.
+// objectsPane shows the selected server's objects, pretty-printed and
+// colored, plus a picker over their stored changes.
 func objectsPane(c *ui.Context, all []state.ServerView) {
 	t := c.Theme()
 	srv, ok := findServer(all, selectedServer)
@@ -72,17 +73,8 @@ func objectsPane(c *ui.Context, all []state.ServerView) {
 	if e, ok := hist.byText[objectAt]; ok {
 		shown = e
 	}
-	cols, rows := flatten(shown.Value)
-	if len(rows) == 0 {
-		ui.Text(c, "empty").FontSize(11).TextColor(t.TextMuted)
-		return
-	}
-	tableCols := make([]ui.TableColumn, len(cols))
-	for i, name := range cols {
-		tableCols[i] = ui.TableColumn{Title: name, Width: 130}
-	}
-	ui.Table(c, nil, tableCols, len(rows), func(row, col int) {
-		ui.Text(c, rows[row][col]).FontSize(11)
+	ui.Scroll(c).Fill().Children(func() {
+		jsonView(c, shown.Value)
 	})
 }
 
@@ -109,67 +101,128 @@ func objectHistory(name string, newest time.Time) *struct {
 	return h
 }
 
-// flatten turns a JSON value into columns and string rows: an array of
-// objects becomes one row per element, a lone object becomes key/value
-// rows, anything else a single value row.
-func flatten(raw json.RawMessage) (cols []string, rows [][]string) {
-	var v any
-	if json.Unmarshal(raw, &v) != nil {
-		return []string{"value"}, [][]string{{string(raw)}}
+// jsonView draws raw pretty-printed and syntax colored, keeping key order.
+func jsonView(c *ui.Context, raw json.RawMessage) {
+	t := c.Theme()
+	p := &jsonPrinter{muted: t.TextMuted}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := p.value(dec, 0); err != nil {
+		ui.Text(c, string(raw)).FontSize(11)
+		return
 	}
-	switch x := v.(type) {
-	case []any:
-		keys := map[string]bool{}
-		for _, el := range x {
-			if m, ok := el.(map[string]any); ok {
-				for k := range m {
-					keys[k] = true
-				}
-			}
-		}
-		if len(keys) == 0 {
-			for _, el := range x {
-				rows = append(rows, []string{cell(el)})
-			}
-			return []string{"value"}, rows
-		}
-		for k := range keys {
-			cols = append(cols, k)
-		}
-		sort.Strings(cols)
-		for _, el := range x {
-			m, _ := el.(map[string]any)
-			r := make([]string, len(cols))
-			for i, k := range cols {
-				r[i] = cell(m[k])
-			}
-			rows = append(rows, r)
-		}
-		return cols, rows
-	case map[string]any:
-		for k := range x {
-			cols = append(cols, k)
-		}
-		sort.Strings(cols)
-		for _, k := range cols {
-			rows = append(rows, []string{k, cell(x[k])})
-		}
-		return []string{"key", "value"}, rows
-	}
-	return []string{"value"}, [][]string{{cell(v)}}
+	ui.RichText(c, p.spans...).Font("monospace").FontSize(11.5)
 }
 
-func cell(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return x
-	case float64:
-		return strconv.FormatFloat(x, 'f', -1, 64)
-	case bool:
-		return strconv.FormatBool(x)
+var (
+	jsonKeyColor     = ui.RGB(86, 156, 214)
+	jsonStringColor  = ui.RGB(106, 168, 79)
+	jsonNumberColor  = ui.RGB(230, 145, 56)
+	jsonKeywordColor = ui.RGB(180, 120, 200)
+)
+
+type jsonPrinter struct {
+	spans []ui.Span
+	muted ui.Color
+}
+
+func (p *jsonPrinter) add(text string, col ui.Color) {
+	p.spans = append(p.spans, ui.Span{Text: text, Color: col})
+}
+
+func (p *jsonPrinter) value(dec *json.Decoder, depth int) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
 	}
-	b, _ := json.Marshal(v)
-	return string(b)
+	switch v := tok.(type) {
+	case json.Delim:
+		open, closer := "{", "}"
+		if v == '[' {
+			open, closer = "[", "]"
+		}
+		if !dec.More() {
+			_, _ = dec.Token()
+			p.add(open+closer, p.muted)
+			return nil
+		}
+		p.add(open+"\n", p.muted)
+		for first := true; dec.More(); first = false {
+			if !first {
+				p.add(",\n", p.muted)
+			}
+			p.add(strings.Repeat("  ", depth+1), ui.Color{})
+			if v == '{' {
+				k, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				key, _ := json.Marshal(k)
+				p.add(string(key), jsonKeyColor)
+				p.add(": ", p.muted)
+			}
+			if err := p.value(dec, depth+1); err != nil {
+				return err
+			}
+		}
+		if _, err := dec.Token(); err != nil {
+			return err
+		}
+		p.add("\n"+strings.Repeat("  ", depth), ui.Color{})
+		p.add(closer, p.muted)
+	case string:
+		b, _ := json.Marshal(v)
+		p.add(string(b), jsonStringColor)
+	case json.Number:
+		p.add(v.String(), jsonNumberColor)
+	case bool:
+		p.add(strconv.FormatBool(v), jsonKeywordColor)
+	case nil:
+		p.add("null", jsonKeywordColor)
+	}
+	return nil
+}
+
+// objectTile is the dashboard widget: every object a series selector
+// (server/object.*) matches, pretty-printed.
+func objectTile(c *ui.Context, w dashboard.Widget, all []state.ServerView, idx int, maximized bool, onRemove, onToggleMaximize, onEdit func(), onReorder func(int)) {
+	t := c.Theme()
+	widgetCard(c, fmt.Sprintf("object-%d", idx), idx, w.EffectiveSpanX(), w.EffectiveSpanY(), widgetTitle(w), maximized, onEdit, onRemove, onToggleMaximize, onReorder, func() {
+		entries := matchObjects(w, all)
+		if len(entries) == 0 {
+			ui.Box(c).Fill().AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+				ui.Text(c, "no object matches").FontSize(11).TextColor(t.TextMuted)
+			})
+			return
+		}
+		ui.Scroll(c).Fill().Gap(8).Children(func() {
+			for _, e := range entries {
+				ui.Text(c, e.Name+" · "+ageText(e.Time, time.Now())+" ago").FontSize(10).TextColor(t.TextMuted)
+				jsonView(c, e.Value)
+			}
+		})
+	})
+}
+
+// matchObjects resolves w's selectors against the stored objects.
+func matchObjects(w dashboard.Widget, all []state.ServerView) []objstore.Entry {
+	if objectStore == nil {
+		return nil
+	}
+	cluster := map[string]string{}
+	for _, s := range all {
+		cluster[s.Name] = s.Cluster
+	}
+	var out []objstore.Entry
+	for _, e := range objectStore.Snapshot() {
+		srv, def, _ := strings.Cut(e.Name, "/")
+		for _, ref := range w.Series {
+			sel, err := ref.Parsed()
+			if err == nil && sel.Match(selector.Candidate{Server: srv, Cluster: cluster[srv], Metric: def, Measurement: "value"}) {
+				out = append(out, e)
+				break
+			}
+		}
+	}
+	return out
 }
