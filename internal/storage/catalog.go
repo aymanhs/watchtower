@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // catalog maps a metric's full name (e.g. "jumpbox/cpu.usage") to the
@@ -96,10 +97,24 @@ func (c *catalog) save() error {
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write catalog temp file: %w", err)
 	}
-	if err := os.Rename(tmp, c.path); err != nil {
+	if err := renameWithRetry(tmp, c.path); err != nil {
 		return fmt.Errorf("rename catalog into place: %w", err)
 	}
 	return nil
+}
+
+// renameWithRetry retries briefly: on Windows a freshly written file is
+// often held open for a moment by antivirus or the search indexer, which
+// makes the replacing rename fail with "Access is denied".
+func renameWithRetry(from, to string) error {
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		if err = os.Rename(from, to); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+	return err
 }
 
 // ensureDir is a tiny helper Open uses so callers don't need their own
